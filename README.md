@@ -1,1 +1,1 @@
-# Skillarbitratge_Claude.Ai
+# Skillarbitrage_Claude.Ai
