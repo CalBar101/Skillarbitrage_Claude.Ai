@@ -6,6 +6,7 @@ import { ZipteamsClient } from "./adapters/zipteams.js";
 import { KVInsightsStore, MemoryKV, type InsightsStore, type KVLike } from "./store.js";
 import { runSelfTest } from "./selftest.js";
 import { rankLeads } from "./ranking.js";
+import { teamDailySummary } from "./summary.js";
 import { ApiError, redactUrl } from "./http.js";
 import type { FetchLike } from "./http.js";
 
@@ -594,6 +595,35 @@ export function createServer(clients: Clients): McpServer {
         excludeStages: a.excludeStages,
         candidates: a.candidates ?? 30,
         scanLimit: a.scanLimit ?? 500,
+        tzOffsetMinutes: clients.tzOffsetMinutes,
+      }),
+    ),
+  );
+
+  server.registerTool(
+    "team_daily_summary",
+    {
+      title: "Team daily summary",
+      description:
+        "What a sales group's book did in the last N hours: per-rep leads touched, new leads, stage mix, closed/pipeline/dead counts, Zipteams HIGH/LOW intent counts, connected calls, which closed-stage leads actually changed stage in the window, and the hottest pipeline leads. Filter by owner emails/ids or a team field.",
+      inputSchema: {
+        hours: z.coerce.number().min(1).max(168).optional().describe("Default 24"),
+        asOf: z.string().optional().describe("ISO 8601 end of window, e.g. 2026-10-07T17:30:00+05:30. Default now"),
+        ownerEmails: z.array(z.string()).optional(),
+        ownerIds: z.array(z.string()).optional(),
+        teamField: z.object({ field: z.string(), value: z.string() }).optional(),
+        scanLimit: z.coerce.number().int().min(100).max(5000).optional().describe("Default 3000"),
+      },
+      annotations: READ,
+    },
+    guard(async (a) =>
+      teamDailySummary(clients, {
+        hours: a.hours ?? 24,
+        asOf: a.asOf ? new Date(a.asOf) : undefined,
+        ownerEmails: a.ownerEmails,
+        ownerIds: a.ownerIds,
+        teamField: a.teamField,
+        scanLimit: a.scanLimit ?? 3000,
         tzOffsetMinutes: clients.tzOffsetMinutes,
       }),
     ),

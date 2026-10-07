@@ -83,53 +83,13 @@ export async function rankLeads(clients: Clients, o: RankOptions) {
   const ownerEmails = new Set((o.ownerEmails ?? []).map((e) => e.toLowerCase()));
   const ownerIds = new Set(o.ownerIds ?? []);
 
-  // 1. Resolve owner emails to ids (LeadSquared filters on OwnerId), then scan per owner, newest-modified first,
-  //    stopping at the window cutoff. A global scan would never reach 7 days back on a busy account.
-  const columns =
-    "ProspectID,FirstName,LastName,EmailAddress,Phone,Mobile,ProspectStage,Score,OwnerId,OwnerIdName,OwnerIdEmailAddress,ModifiedOn,CreatedOn,Source,LastActivity,LastActivityDate,mx_Zip_Intent,mx_Zip_Intent_Type,mx_Zip_Intent_Score,mx_Zip_AI_Disposition,mx_Zip_Objection_Category,mx_Lead_category,mx_Call_Connected_Status,mx_Enquired_Course" +
-    (o.teamField ? `,${o.teamField.field}` : "");
-  const resolvedOwnerIds = new Set(ownerIds);
-  const ownerNames: Record<string, string> = {};
-  if (ownerEmails.size) {
-    const users = (await lsq.listUsers()) as Record<string, unknown>[];
-    for (const u of users) {
-      const em = lower(u.EmailAddress);
-      if (ownerEmails.has(em) && typeof u.ID === "string") {
-        resolvedOwnerIds.add(u.ID);
-        ownerNames[u.ID] = `${u.FirstName ?? ""} ${u.LastName ?? ""}`.trim();
-      }
-    }
-    const missing = [...ownerEmails].filter((e) => !Object.values(ownerNames).length || ![...users].some((u) => lower(u.EmailAddress) === e));
-    if (missing.length) ownerNames["_unresolvedEmails"] = missing.join(", ");
-  }
-  const scanned: Record<string, unknown>[] = [];
-  const pageSize = 100;
-  const scanOne = async (param?: { LookupName: string; LookupValue: string; SqlOperator: string }) => {
-    for (let page = 1; scanned.length < o.scanLimit; page++) {
-      const rows = (await lsq.searchLeads({
-        Parameter: param,
-        Columns: { Include_CSV: columns },
-        Sorting: { ColumnName: "ModifiedOn", Direction: "1" },
-        Paging: { PageIndex: page, PageSize: pageSize },
-      })) as Record<string, unknown>[];
-      if (!Array.isArray(rows) || rows.length === 0) break;
-      let stop = false;
-      for (const r of rows) {
-        if (typeof r.ModifiedOn === "string" && r.ModifiedOn < cutoffLocal) {
-          stop = true;
-          break;
-        }
-        scanned.push(r);
-      }
-      if (stop || rows.length < pageSize) break;
-    }
-  };
-  if (resolvedOwnerIds.size) {
-    for (const id of resolvedOwnerIds) await scanOne({ LookupName: "OwnerId", LookupValue: id, SqlOperator: "=" });
-  } else {
-    await scanOne(o.teamField ? { LookupName: o.teamField.field, LookupValue: o.teamField.value, SqlOperator: "=" } : undefined);
-  }
-
+  const { scanned, resolvedOwnerIds, ownerNames } = await scanTeamLeads(clients, {
+    ownerEmails: [...ownerEmails],
+    ownerIds: [...ownerIds],
+    teamField: o.teamField,
+    cutoffLocal,
+    scanLimit: o.scanLimit,
+  });
   // 2. Team / owner / stage filter and the cheap part of the score.
   const prelim = scanned
     .filter((r) => {
@@ -253,3 +213,66 @@ export async function rankLeads(clients: Clients, o: RankOptions) {
   };
 }
 
+export const TEAM_LEAD_COLUMNS =
+  "ProspectID,FirstName,LastName,EmailAddress,Phone,Mobile,ProspectStage,Score,OwnerId,OwnerIdName,OwnerIdEmailAddress,ModifiedOn,CreatedOn,Source,LastActivity,LastActivityDate,mx_Zip_Intent,mx_Zip_Intent_Type,mx_Zip_Intent_Score,mx_Zip_AI_Disposition,mx_Zip_Objection_Category,mx_Lead_category,mx_Call_Connected_Status,mx_Enquired_Course";
+
+/**
+ * Leads modified at/after `cutoffLocal` for a set of owners (one LeadSquared query per owner,
+ * newest first, stopping at the cutoff) or for a team field value. Shared by ranking and summaries.
+ */
+export async function scanTeamLeads(
+  clients: Clients,
+  o: { ownerEmails?: string[]; ownerIds?: string[]; teamField?: { field: string; value: string }; cutoffLocal: string; scanLimit: number },
+) {
+  const lsq = clients.leadsquared;
+  if (!lsq) throw new Error("LeadSquared is not configured.");
+  const ownerEmails = new Set((o.ownerEmails ?? []).map((e) => e.toLowerCase()));
+  const columns = TEAM_LEAD_COLUMNS + (o.teamField ? `,${o.teamField.field}` : "");
+  const resolvedOwnerIds = new Set(o.ownerIds ?? []);
+  const ownerNames: Record<string, string> = {};
+  if (ownerEmails.size) {
+    const users = (await lsq.listUsers()) as Record<string, unknown>[];
+    const found = new Set<string>();
+    for (const u of users) {
+      const em = lower(u.EmailAddress);
+      if (ownerEmails.has(em) && typeof u.ID === "string") {
+        resolvedOwnerIds.add(u.ID);
+        ownerNames[u.ID] = `${u.FirstName ?? ""} ${u.LastName ?? ""}`.trim();
+        found.add(em);
+      }
+    }
+    const missing = [...ownerEmails].filter((e) => !found.has(e));
+    if (missing.length) ownerNames["_unresolvedEmails"] = missing.join(", ");
+  }
+  const scanned: Record<string, unknown>[] = [];
+  const pageSize = 100;
+  const scanOne = async (param?: { LookupName: string; LookupValue: string; SqlOperator: string }) => {
+    for (let page = 1; scanned.length < o.scanLimit; page++) {
+      const rows = (await lsq.searchLeads({
+        Parameter: param,
+        Columns: { Include_CSV: columns },
+        Sorting: { ColumnName: "ModifiedOn", Direction: "1" },
+        Paging: { PageIndex: page, PageSize: pageSize },
+      })) as Record<string, unknown>[];
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      let stop = false;
+      for (const r of rows) {
+        if (typeof r.ModifiedOn === "string" && r.ModifiedOn < o.cutoffLocal) {
+          stop = true;
+          break;
+        }
+        scanned.push(r);
+      }
+      if (stop || rows.length < pageSize) break;
+    }
+  };
+  if (resolvedOwnerIds.size) {
+    for (const id of resolvedOwnerIds) await scanOne({ LookupName: "OwnerId", LookupValue: id, SqlOperator: "=" });
+  } else {
+    await scanOne(o.teamField ? { LookupName: o.teamField.field, LookupValue: o.teamField.value, SqlOperator: "=" } : undefined);
+  }
+  return { scanned, resolvedOwnerIds, ownerNames };
+}
+
+export const lowerText = lower;
+export const zipWeight = zipTypeWeight;
