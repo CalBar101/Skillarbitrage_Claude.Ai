@@ -6,9 +6,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   // Non-secret config. Secrets (API keys) are set with `wrangler secret put`, never here.
+  "kv_namespaces": [{ "binding": "INSIGHTS", "id": "aef70dd5b79f46f7bf9240644842fe3b" }],
   "vars": {
     "LEADSQUARED_HOST": "api-in21.leadsquared.com",
-    "ZIPTEAMS_BASE_URL": "",
+    "PUBLIC_BASE_URL": "https://skillarbitrage-mcp.kriti-s.workers.dev",
+    "RUNDOWN_TZ_OFFSET_MINUTES": "330",
     "SALESA_BASE_URL": "https://centralized-transcript-api.altlapps.com/api/v1"
   }
 }

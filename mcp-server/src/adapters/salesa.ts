@@ -5,16 +5,11 @@
  */
 import { GenericRestClient } from "./generic.js";
 import type { FetchLike } from "../http.js";
+import { normalisePhone } from "../phone.js";
+export { normalisePhone };
 
 export const SALESA_DEFAULT_BASE_URL = "https://centralized-transcript-api.altlapps.com/api/v1";
 
-/** Normalise an Indian phone to the 12-digit form Salesa expects (91XXXXXXXXXX). Other countries pass through digits-only. */
-export function normalisePhone(raw: string): string {
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length === 10) return `91${digits}`;
-  if (digits.length === 11 && digits.startsWith("0")) return `91${digits.slice(1)}`;
-  return digits;
-}
 
 export class SalesaClient {
   readonly rest: GenericRestClient;

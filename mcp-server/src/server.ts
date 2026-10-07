@@ -1,8 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { LeadSquaredClient, type LsqAttribute } from "./adapters/leadsquared.js";
-import { GenericRestClient } from "./adapters/generic.js";
 import { SalesaClient } from "./adapters/salesa.js";
+import { ZipteamsClient } from "./adapters/zipteams.js";
+import { KVInsightsStore, MemoryKV, type InsightsStore, type KVLike } from "./store.js";
 import { ApiError, redactUrl } from "./http.js";
 import type { FetchLike } from "./http.js";
 
@@ -11,16 +12,25 @@ export interface Env {
   LEADSQUARED_HOST: string;
   LEADSQUARED_ACCESS_KEY?: string;
   LEADSQUARED_SECRET_KEY?: string;
-  ZIPTEAMS_BASE_URL?: string;
   ZIPTEAMS_API_KEY?: string;
+  /** Secret path segment Zipteams must use when calling our webhook. */
+  ZIPTEAMS_WEBHOOK_SECRET?: string;
+  /** Public URL of this Worker, used to build callback URLs. */
+  PUBLIC_BASE_URL?: string;
   SALESA_BASE_URL?: string;
   SALESA_API_KEY?: string;
+  /** Offset for "today" in rundowns, minutes east of UTC. Default 330 (IST). */
+  RUNDOWN_TZ_OFFSET_MINUTES?: string;
+  INSIGHTS?: KVLike;
 }
 
 export interface Clients {
   leadsquared?: LeadSquaredClient;
-  zipteams: GenericRestClient;
+  zipteams: ZipteamsClient;
   salesa: SalesaClient;
+  store: InsightsStore;
+  zipteamsCallbackUrl?: string;
+  tzOffsetMinutes: number;
 }
 
 export function buildClients(env: Env, fetchImpl?: FetchLike): Clients {
@@ -34,13 +44,14 @@ export function buildClients(env: Env, fetchImpl?: FetchLike): Clients {
             fetch: fetchImpl,
           })
         : undefined,
-    zipteams: new GenericRestClient({
-      service: "Zipteams",
-      baseUrl: env.ZIPTEAMS_BASE_URL ?? "",
-      apiKey: env.ZIPTEAMS_API_KEY,
-      fetch: fetchImpl,
-    }),
+    zipteams: new ZipteamsClient({ apiKey: env.ZIPTEAMS_API_KEY, fetch: fetchImpl }),
     salesa: new SalesaClient({ baseUrl: env.SALESA_BASE_URL, apiKey: env.SALESA_API_KEY, fetch: fetchImpl }),
+    store: new KVInsightsStore(env.INSIGHTS ?? new MemoryKV()),
+    zipteamsCallbackUrl:
+      env.PUBLIC_BASE_URL && env.ZIPTEAMS_WEBHOOK_SECRET
+        ? `${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/webhooks/zipteams/${env.ZIPTEAMS_WEBHOOK_SECRET}`
+        : undefined,
+    tzOffsetMinutes: Number(env.RUNDOWN_TZ_OFFSET_MINUTES ?? 330),
   };
 }
 
@@ -91,7 +102,8 @@ export function createServer(clients: Clients): McpServer {
     },
     guard(async () => ({
       leadsquared: clients.leadsquared ? "configured" : "missing LEADSQUARED_ACCESS_KEY / LEADSQUARED_SECRET_KEY",
-      zipteams: clients.zipteams.configured ? "configured" : "missing ZIPTEAMS_BASE_URL / ZIPTEAMS_API_KEY",
+      zipteams: clients.zipteams.configured ? "configured" : "missing ZIPTEAMS_API_KEY",
+      zipteamsCallbackUrl: clients.zipteamsCallbackUrl ?? "not set (PUBLIC_BASE_URL / ZIPTEAMS_WEBHOOK_SECRET)",
       salesa: clients.salesa.configured ? "configured" : "missing SALESA_API_KEY",
     })),
   );
@@ -309,22 +321,147 @@ export function createServer(clients: Clients): McpServer {
     guard(async () => lsq().listUsers()),
   );
 
-  // ---------------- Zipteams (generic until API docs arrive) ----------------
+  // ---------------- Zipteams (push in, read stored callbacks) ----------------
+  const agentSchema = z.object({ id: z.string().describe("Your internal agent id"), email: z.string().describe("Agent email exactly as they exist and are Active on Zipteams") });
+
   server.registerTool(
-    "zipteams_api_request",
+    "zipteams_sync_call",
     {
-      title: "Zipteams raw API request",
+      title: "Send a call recording to Zipteams for AI analysis",
       description:
-        "Call any Zipteams REST endpoint relative to its configured base URL. Use GET for reads; only use write methods after confirming with the user.",
+        "Push one or more completed calls (public recording URL + agent + customer) to Zipteams. Zipteams transcribes and analyses asynchronously and posts the result to this server's webhook; read it later with zipteams_call_insights. call.id must be unique per call. Confirm with the user first.",
       inputSchema: {
-        method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-        path: z.string().describe("Path relative to the base URL, e.g. /meetings"),
-        query: z.record(z.string(), z.string()).optional(),
-        body: z.unknown().optional(),
+        calls: z
+          .array(
+            z.object({
+              callId: z.string(),
+              recordingUrl: z.string().url().describe("Publicly reachable MP3/WAV/AAC/M4A/MP4 URL"),
+              startTime: z.string().describe("ISO 8601 with timezone, e.g. 2026-07-28T14:45:00+05:30"),
+              phone: z.string().optional().describe("Customer phone; required unless customerEmail given"),
+              agent: agentSchema,
+              customerId: z.string().optional().describe("Your CRM id, e.g. the LeadSquared ProspectID. Echoed back in callbacks."),
+              customerName: z.string().optional(),
+              customerEmail: z.string().optional(),
+              dispositionStatus: z.string().optional(),
+              customFields: z.array(z.object({ internal_name: z.string(), value: z.string() })).optional(),
+              metadata: z.record(z.string(), z.string()).optional(),
+              accessType: z.enum(["whitelisted_ip"]).optional(),
+            }),
+          )
+          .min(1)
+          .max(50),
       },
       annotations: WRITE,
     },
-    guard(async ({ method, path, query, body }) => clients.zipteams.request(method, path, { query, body })),
+    guard(async ({ calls }) =>
+      clients.zipteams.syncCalls(
+        calls.map((c) => ({
+          call: { id: c.callId, recording_url: c.recordingUrl, start_time: c.startTime, phone_number: c.phone, access_type: c.accessType },
+          agent: c.agent,
+          customer: { id: c.customerId, name: c.customerName, email: c.customerEmail, disposition_status: c.dispositionStatus },
+          custom_fields: c.customFields,
+          metadata: c.metadata,
+          callback_url: clients.zipteamsCallbackUrl,
+        })),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    "zipteams_upsert_customer",
+    {
+      title: "Create or update a Zipteams customer",
+      description: "Create the customer in Zipteams if missing (matched by email/phone), otherwise update status and customer-level custom fields. No call needed. Confirm with the user first.",
+      inputSchema: {
+        agentEmail: z.string(),
+        name: z.string().optional(),
+        email: z.string().optional(),
+        phone: z.string().optional(),
+        dispositionStatus: z.string().optional(),
+        customFields: z.array(z.object({ field_name: z.string(), value: z.string() })).optional(),
+      },
+      annotations: { ...WRITE, idempotentHint: true },
+    },
+    guard(async (a) =>
+      clients.zipteams.upsertCustomer({
+        agent_email: a.agentEmail,
+        name: a.name,
+        email: a.email,
+        phone_number: a.phone,
+        disposition_status: a.dispositionStatus,
+        custom_fields: a.customFields,
+      }),
+    ),
+  );
+
+  server.registerTool(
+    "zipteams_update_disposition",
+    {
+      title: "Update a Zipteams customer's disposition status",
+      description: "Update status / conversation-level custom fields on a customer that already exists in Zipteams, without sending a call. Confirm with the user first.",
+      inputSchema: {
+        agent: agentSchema,
+        phone: z.string().optional(),
+        email: z.string().optional(),
+        customerId: z.string().optional(),
+        name: z.string().optional(),
+        dispositionStatus: z.string().optional(),
+        customFields: z.array(z.object({ internal_name: z.string(), value: z.string() })).optional(),
+      },
+      annotations: { ...WRITE, idempotentHint: true },
+    },
+    guard(async (a) =>
+      clients.zipteams.updateDisposition([
+        {
+          agent: a.agent,
+          customer: { id: a.customerId, name: a.name, email: a.email, phone_number: a.phone, disposition_status: a.dispositionStatus },
+          custom_fields: a.customFields,
+        },
+      ]),
+    ),
+  );
+
+  server.registerTool(
+    "zipteams_call_insights",
+    {
+      title: "Zipteams AI analysis for a call",
+      description: "Read the stored Call Summary callback for a call id: intent, scores, chapter summaries, BANT, quality parameters. Returns null if Zipteams has not posted it yet.",
+      inputSchema: { callId: z.string() },
+      annotations: READ,
+    },
+    guard(async ({ callId }) => clients.store.getCallSummary(callId)),
+  );
+
+  server.registerTool(
+    "zipteams_customer_insights",
+    {
+      title: "Zipteams customer-level insights",
+      description: "Latest stored Customer Summary for a contact by phone, email or customer id: intent, BANT, objections, competitors, timeline, talking points.",
+      inputSchema: { phone: z.string().optional(), email: z.string().optional(), customerId: z.string().optional() },
+      annotations: READ,
+    },
+    guard(async (q) => {
+      if (!q.phone && !q.email && !q.customerId) throw new Error("Provide phone, email or customerId.");
+      return clients.store.getCustomerSummary(q);
+    }),
+  );
+
+  server.registerTool(
+    "zipteams_recent_insights",
+    {
+      title: "Recent Zipteams insights",
+      description: "Call and customer summaries received from Zipteams in the last N hours, newest first.",
+      inputSchema: { hours: z.number().min(1).max(720).optional().describe("Default 24"), limit: z.number().int().min(1).max(200).optional() },
+      annotations: READ,
+    },
+    guard(async ({ hours, limit }) => {
+      const sinceIso = new Date(Date.now() - (hours ?? 24) * 3600_000).toISOString();
+      const [calls, customers] = await Promise.all([
+        clients.store.listRecentCalls({ sinceIso, limit }),
+        clients.store.listRecentCustomers({ sinceIso, limit }),
+      ]);
+      return { since: sinceIso, calls, customers };
+    }),
   );
 
   // ---------------- Salesa (call transcripts) ----------------
@@ -391,6 +528,66 @@ export function createServer(clients: Clients): McpServer {
         },
         numbersQueried: numbers,
         transcripts,
+      };
+    }),
+  );
+
+  // ---------------- Rundown ----------------
+  server.registerTool(
+    "daily_rundown",
+    {
+      title: "Daily rundown across LeadSquared, Zipteams and Salesa",
+      description:
+        "One call for the morning check: LeadSquared tasks due today and overdue, leads modified in the last 24h, and Zipteams call/customer insights received in the last 24h. Salesa transcripts are per-lead; use lead_call_transcripts for a specific lead. Each section reports its own error instead of failing the whole rundown.",
+      inputSchema: {
+        ownerUserId: z.string().optional().describe("Restrict tasks to this LeadSquared user id"),
+        hours: z.number().min(1).max(168).optional().describe("Look-back window for leads and insights. Default 24"),
+      },
+      annotations: READ,
+    },
+    guard(async ({ ownerUserId, hours }) => {
+      const windowMs = (hours ?? 24) * 3600_000;
+      const now = new Date();
+      const sinceIso = new Date(now.getTime() - windowMs).toISOString();
+      // LeadSquared date strings are in the account timezone, "yyyy-MM-dd HH:mm:ss".
+      const local = (d: Date) => new Date(d.getTime() + clients.tzOffsetMinutes * 60_000).toISOString().slice(0, 19).replace("T", " ");
+      const endOfToday = local(now).slice(0, 10) + " 23:59:59";
+      const weekAgo = local(new Date(now.getTime() - 7 * 86_400_000)).slice(0, 10) + " 00:00:00";
+
+      const section = async <T,>(fn: () => Promise<T>): Promise<T | { error: string }> => {
+        try {
+          return await fn();
+        } catch (e) {
+          return { error: redactUrl(e instanceof Error ? e.message : String(e)) };
+        }
+      };
+
+      const [tasks, leads, insightsCalls, insightsCustomers] = await Promise.all([
+        section(() =>
+          lsq().listTasks({
+            Parameter: { LookupName: ownerUserId ? "OwnerId" : undefined, LookupValue: ownerUserId, FromDate: weekAgo, ToDate: endOfToday },
+            Paging: { PageIndex: 1, PageSize: 100 },
+          }),
+        ),
+        section(async () => {
+          const rows = (await lsq().searchLeads({
+            Columns: { Include_CSV: "ProspectID,FirstName,LastName,EmailAddress,Phone,Mobile,ProspectStage,OwnerIdName,Source,ModifiedOn,CreatedOn" },
+            Sorting: { ColumnName: "ModifiedOn", Direction: "1" },
+            Paging: { PageIndex: 1, PageSize: 50 },
+          })) as Record<string, unknown>[];
+          const cutoff = local(new Date(now.getTime() - windowMs));
+          return rows.filter((r) => typeof r.ModifiedOn === "string" && r.ModifiedOn >= cutoff);
+        }),
+        section(() => clients.store.listRecentCalls({ sinceIso, limit: 100 })),
+        section(() => clients.store.listRecentCustomers({ sinceIso, limit: 100 })),
+      ]);
+
+      return {
+        generatedAt: now.toISOString(),
+        window: { since: sinceIso, tasksFrom: weekAgo, tasksTo: endOfToday, timezoneOffsetMinutes: clients.tzOffsetMinutes },
+        leadsquared: { tasksDueOrOverdue: tasks, leadsModified: leads },
+        zipteams: { calls: insightsCalls, customers: insightsCustomers },
+        salesa: "per-lead only: call lead_call_transcripts with a lead id, email or phone",
       };
     }),
   );

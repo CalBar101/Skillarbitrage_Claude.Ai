@@ -1,5 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { buildClients, createServer, type Env } from "./server.js";
+import type { CallSummary, CustomerSummary } from "./store.js";
 
 function timingSafeEqual(a: string, b: string): boolean {
   const enc = new TextEncoder();
@@ -30,6 +31,30 @@ export default {
     if (url.pathname === "/" || url.pathname === "/health") {
       return Response.json({ ok: true, service: "skillarbitrage-mcp", endpoint: "/mcp" });
     }
+    // Zipteams callbacks: POST /webhooks/zipteams/<ZIPTEAMS_WEBHOOK_SECRET>
+    const hook = url.pathname.match(/^\/webhooks\/zipteams\/([^/]+)$/);
+    if (hook) {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      if (!env.ZIPTEAMS_WEBHOOK_SECRET || !timingSafeEqual(decodeURIComponent(hook[1]), env.ZIPTEAMS_WEBHOOK_SECRET)) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      let payload: Record<string, unknown>;
+      try {
+        payload = (await req.json()) as Record<string, unknown>;
+      } catch {
+        return new Response("Invalid JSON", { status: 400 });
+      }
+      const { store } = buildClients(env);
+      if (payload.type === "CALL_SUMMARY" && typeof payload.call_id === "string") {
+        await store.saveCallSummary(payload as unknown as CallSummary);
+      } else if (payload.type === "CUSTOMER_SUMMARY") {
+        await store.saveCustomerSummary(payload as unknown as CustomerSummary);
+      } else {
+        return Response.json({ ok: false, ignored: true, reason: "unknown type" });
+      }
+      return Response.json({ ok: true });
+    }
+
     const { token, pathOk } = extractToken(req);
     if (!pathOk) return new Response("Not found", { status: 404 });
     if (!env.MCP_AUTH_TOKEN) return new Response("Server misconfigured: MCP_AUTH_TOKEN not set", { status: 500 });

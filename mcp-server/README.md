@@ -19,7 +19,17 @@ claude.ai, Claude Desktop, or Claude Code.
 | `salesa_get_transcripts` | Call transcripts for one or more phone numbers (answered calls by default) |
 | `salesa_generate_transcripts` | Ask Salesa to transcribe pending calls for given phones |
 | `lead_call_transcripts` | Join: LeadSquared lead (by id, email or phone) plus its Salesa transcripts |
-| `zipteams_api_request` | Raw REST calls until the Zipteams API is mapped to typed tools |
+| `zipteams_sync_call` | Push a call recording + agent + customer to Zipteams for AI analysis (callback lands on this server) |
+| `zipteams_upsert_customer` / `zipteams_update_disposition` | Create or update customers and statuses in Zipteams |
+| `zipteams_call_insights` / `zipteams_customer_insights` / `zipteams_recent_insights` | Read the AI analysis Zipteams posted back (stored in KV) |
+| `daily_rundown` | LeadSquared tasks due/overdue, leads modified in 24h, Zipteams insights in 24h |
+
+## Zipteams callbacks
+
+Zipteams has no read API. It POSTs `CALL_SUMMARY` and `CUSTOMER_SUMMARY` payloads to
+`https://<worker>.workers.dev/webhooks/zipteams/<ZIPTEAMS_WEBHOOK_SECRET>`. Call summaries
+arrive automatically for calls sent with `zipteams_sync_call`. Customer summaries must be
+enabled by Zipteams support for the same URL. Payloads are stored in the `INSIGHTS` KV namespace.
 
 ## Deploy
 
@@ -33,6 +43,7 @@ npx wrangler secret put MCP_AUTH_TOKEN
 npx wrangler secret put LEADSQUARED_ACCESS_KEY
 npx wrangler secret put LEADSQUARED_SECRET_KEY
 npx wrangler secret put ZIPTEAMS_API_KEY
+npx wrangler secret put ZIPTEAMS_WEBHOOK_SECRET   # openssl rand -hex 24
 npx wrangler secret put SALESA_API_KEY
 
 # Region host and base URLs live in wrangler.jsonc "vars".
