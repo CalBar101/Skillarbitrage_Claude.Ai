@@ -27,10 +27,24 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   calls.push({ url, init });
   if (url.includes("Leads.GetByEmailaddress"))
     return new Response(JSON.stringify([{ ProspectID: "123", FirstName: "Asha" }]), { headers: { "content-type": "application/json" } });
+  if (url.includes("Leads.Get?") || url.includes("Leads.Get&")) {
+    const body = JSON.parse(String(init?.body));
+    if (body.Paging?.PageIndex > 1) return new Response("[]");
+    const day = (n: number) => new Date(Date.now() - n * 86_400_000 + 330 * 60_000).toISOString().slice(0, 19).replace("T", " ");
+    return new Response(JSON.stringify([
+      { ProspectID: "A", FirstName: "Hot", Phone: "+91-7805955245", ProspectStage: "Opportunity", Score: "60", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(0.5) },
+      { ProspectID: "B", FirstName: "Warm", Phone: "9213579137", ProspectStage: "Prospect", Score: "20", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(2) },
+      { ProspectID: "C", FirstName: "Other", Phone: "9000000000", ProspectStage: "Opportunity", Score: "90", OwnerIdEmailAddress: "someone@x.com", ModifiedOn: day(1) },
+      { ProspectID: "D", FirstName: "Won", Phone: "9111111111", ProspectStage: "Customer", Score: "99", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(1) },
+      { ProspectID: "E", FirstName: "Old", Phone: "9222222222", ProspectStage: "Opportunity", Score: "99", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(9) },
+    ]));
+  }
+  if (url.includes("ProspectActivity.svc/Retrieve"))
+    return new Response(JSON.stringify({ RecordCount: url.includes("leadId=A") ? 6 : 1, ProspectActivities: url.includes("leadId=A") ? [1, 2, 3, 4, 5, 6] : [1] }));
   if (url.includes("RetrieveLeadByPhoneNumber"))
     return new Response(JSON.stringify([{ ProspectID: "77", FirstName: "Ravi", Phone: "+91-7805955245", Mobile: "9213579137" }]));
   if (url.includes("search-by-numbers-v1"))
-    return new Response(JSON.stringify({ data: [{ phone: "917805955245", transcript: "hello" }] }));
+    return new Response(JSON.stringify({ data: [{ phone: "917805955245", transcript: "hello" }, { phone: "917805955245", transcript: "again" }, { phone: "919213579137", transcript: "hi" }] }));
   if (url.includes("calls-webhook-ingestion-handler")) return new Response(JSON.stringify({ message: "Data Received Successfully" }));
   if (url.includes("/partner/ingest/")) return new Response(JSON.stringify({ success: true }));
   if (url.includes("Lead.Update")) return new Response(JSON.stringify({ Status: "Success", Message: { AffectedRows: 1 } }));
@@ -178,6 +192,25 @@ test("partner credentials switch to the Partner API with UTC times and contact_n
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test("rank_leads_by_conversion filters by owner, window and stage, and enriches with calls, activities and intent", async () => {
+  await worker.fetch(new Request("http://worker.test/webhooks/zipteams/hook-secret", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "CUSTOMER_SUMMARY", customer_id: "B", phone: "+919213579137", intent: "INTERESTED", intent_score: 80 }) }), env as never);
+  const client = new Client({ name: "t", version: "0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL("http://worker.test/mcp/test-token")));
+  const r = await client.callTool({ name: "rank_leads_by_conversion", arguments: { days: 7, ownerEmails: ["Elite1@x.com"] } });
+  assert.equal(r.isError, undefined, (r.content as { text: string }[])[0].text);
+  const out = JSON.parse((r.content as { text: string }[])[0].text);
+  const ids = out.leads.map((l: { ProspectID: string }) => l.ProspectID);
+  assert.deepEqual(ids.sort(), ["A", "B"], "C is another owner, D is a Customer, E is outside the window");
+  const A = out.leads.find((l: { ProspectID: string }) => l.ProspectID === "A");
+  const B = out.leads.find((l: { ProspectID: string }) => l.ProspectID === "B");
+  assert.equal(A.signals.salesaAnsweredCalls, 2);
+  assert.equal(A.signals.activitiesRecent, 6);
+  assert.equal(B.signals.zipteamsIntent, "INTERESTED");
+  assert.ok(B.signals.zipteamsIntentScoreW === 16);
+  assert.ok(typeof out.scoring === "string");
+  await client.close();
 });
 
 test("unconfigured services report cleanly instead of throwing", async () => {

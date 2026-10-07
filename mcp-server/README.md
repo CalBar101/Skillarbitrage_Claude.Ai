@@ -23,6 +23,7 @@ claude.ai, Claude Desktop, or Claude Code.
 | `zipteams_sync_call` | Push a call recording + agent + customer to Zipteams for AI analysis (callback lands on this server) |
 | `zipteams_upsert_customer` / `zipteams_update_disposition` | Create or update customers and statuses in Zipteams |
 | `zipteams_call_insights` / `zipteams_customer_insights` / `zipteams_recent_insights` | Read the AI analysis Zipteams posted back (stored in KV) |
+| `rank_leads_by_conversion` | Leads touched in the last N days for a team, ranked by stage, lead score, recency, activities, Salesa calls and Zipteams intent |
 | `daily_rundown` | LeadSquared tasks due/overdue, leads modified in 24h, Zipteams insights in 24h |
 
 ## Zipteams credentials

@@ -5,6 +5,7 @@ import { SalesaClient } from "./adapters/salesa.js";
 import { ZipteamsClient } from "./adapters/zipteams.js";
 import { KVInsightsStore, MemoryKV, type InsightsStore, type KVLike } from "./store.js";
 import { runSelfTest } from "./selftest.js";
+import { rankLeads } from "./ranking.js";
 import { ApiError, redactUrl } from "./http.js";
 import type { FetchLike } from "./http.js";
 
@@ -558,6 +559,40 @@ export function createServer(clients: Clients): McpServer {
         transcripts,
       };
     }),
+  );
+
+  // ---------------- Ranking ----------------
+  server.registerTool(
+    "rank_leads_by_conversion",
+    {
+      title: "Rank leads by conversion likelihood",
+      description:
+        "Leads modified in the last N days, filtered to a team (owner emails/ids or a lead field value), scored on stage, LeadSquared lead score, activity recency and count, Salesa answered calls, and Zipteams intent where stored. Returns the ranked list with each signal so the result can be explained. Use leadsquared_users to find owner emails and leadsquared_lead_fields to find a team field.",
+      inputSchema: {
+        days: z.number().int().min(1).max(90).optional().describe("Default 7"),
+        ownerEmails: z.array(z.string()).optional(),
+        ownerIds: z.array(z.string()).optional(),
+        teamField: z.object({ field: z.string(), value: z.string() }).optional(),
+        stageWeights: z.record(z.string(), z.number()).optional(),
+        excludeStages: z.array(z.string()).optional(),
+        candidates: z.number().int().min(1).max(100).optional().describe("Leads to enrich with call and intent signals. Default 30"),
+        scanLimit: z.number().int().min(100).max(2000).optional().describe("Max leads scanned. Default 500"),
+      },
+      annotations: READ,
+    },
+    guard(async (a) =>
+      rankLeads(clients, {
+        days: a.days ?? 7,
+        ownerEmails: a.ownerEmails,
+        ownerIds: a.ownerIds,
+        teamField: a.teamField,
+        stageWeights: a.stageWeights,
+        excludeStages: a.excludeStages,
+        candidates: a.candidates ?? 30,
+        scanLimit: a.scanLimit ?? 500,
+        tzOffsetMinutes: clients.tzOffsetMinutes,
+      }),
+    ),
   );
 
   // ---------------- Rundown ----------------
