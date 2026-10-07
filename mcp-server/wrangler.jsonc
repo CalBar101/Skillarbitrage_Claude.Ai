@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "skillarbitrage-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // Non-secret config. Secrets (API keys) are set with `wrangler secret put`, never here.
+  "vars": {
+    "LEADSQUARED_HOST": "api.leadsquared.com",
+    "ZIPTEAMS_BASE_URL": "",
+    "SALESA_BASE_URL": ""
+  }
+}
