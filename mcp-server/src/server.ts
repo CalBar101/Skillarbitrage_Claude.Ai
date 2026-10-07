@@ -26,7 +26,7 @@ export interface Env {
   PUBLIC_BASE_URL?: string;
   SALESA_BASE_URL?: string;
   SALESA_API_KEY?: string;
-  /** Offset for "today" in rundowns, minutes east of UTC. Default 330 (IST). */
+  /** Offset applied to LeadSquared API timestamps. The v2 API returns UTC, so this stays 0; display conversion to IST happens in the client. */
   RUNDOWN_TZ_OFFSET_MINUTES?: string;
   /** Phone the scheduled self-test looks up. */
   SELFTEST_SAMPLE_PHONE?: string;
