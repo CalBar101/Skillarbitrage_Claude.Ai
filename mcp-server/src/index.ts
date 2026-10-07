@@ -70,4 +70,5 @@ export default {
     await server.connect(transport);
     return transport.handleRequest(req);
   },
+
 } satisfies ExportedHandler<Env>;

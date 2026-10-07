@@ -9,6 +9,7 @@ claude.ai, Claude Desktop, or Claude Code.
 | Tool | What it does |
 | --- | --- |
 | `connections_status` | Which services are configured |
+| `connections_selftest` | Read-only end-to-end check of LeadSquared, Salesa and the Zipteams key |
 | `leadsquared_find_lead` | Lookup by id, email, phone, or quick search |
 | `leadsquared_search_leads` | Filter by any field with paging and sorting |
 | `leadsquared_lead_fields` | Field schema names and dropdown options |

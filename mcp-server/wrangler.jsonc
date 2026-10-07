@@ -11,6 +11,7 @@
     "LEADSQUARED_HOST": "api-in21.leadsquared.com",
     "PUBLIC_BASE_URL": "https://skillarbitrage-mcp.kriti-s.workers.dev",
     "RUNDOWN_TZ_OFFSET_MINUTES": "330",
+    "SELFTEST_SAMPLE_PHONE": "917805955245",
     "SALESA_BASE_URL": "https://centralized-transcript-api.altlapps.com/api/v1"
   }
 }

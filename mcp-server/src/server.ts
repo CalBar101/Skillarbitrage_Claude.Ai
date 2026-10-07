@@ -4,6 +4,7 @@ import { LeadSquaredClient, type LsqAttribute } from "./adapters/leadsquared.js"
 import { SalesaClient } from "./adapters/salesa.js";
 import { ZipteamsClient } from "./adapters/zipteams.js";
 import { KVInsightsStore, MemoryKV, type InsightsStore, type KVLike } from "./store.js";
+import { runSelfTest } from "./selftest.js";
 import { ApiError, redactUrl } from "./http.js";
 import type { FetchLike } from "./http.js";
 
@@ -25,6 +26,8 @@ export interface Env {
   SALESA_API_KEY?: string;
   /** Offset for "today" in rundowns, minutes east of UTC. Default 330 (IST). */
   RUNDOWN_TZ_OFFSET_MINUTES?: string;
+  /** Phone the scheduled self-test looks up. */
+  SELFTEST_SAMPLE_PHONE?: string;
   INSIGHTS?: KVLike;
 }
 
@@ -35,6 +38,8 @@ export interface Clients {
   store: InsightsStore;
   zipteamsCallbackUrl?: string;
   tzOffsetMinutes: number;
+  /** Only used by the self-test key probe. */
+  zipteamsApiKey?: string;
 }
 
 export function buildClients(env: Env, fetchImpl?: FetchLike): Clients {
@@ -62,6 +67,7 @@ export function buildClients(env: Env, fetchImpl?: FetchLike): Clients {
         ? `${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/webhooks/zipteams/${env.ZIPTEAMS_WEBHOOK_SECRET}`
         : undefined,
     tzOffsetMinutes: Number(env.RUNDOWN_TZ_OFFSET_MINUTES ?? 330),
+    zipteamsApiKey: env.ZIPTEAMS_API_KEY,
   };
 }
 
@@ -116,6 +122,17 @@ export function createServer(clients: Clients): McpServer {
       zipteamsCallbackUrl: clients.zipteamsCallbackUrl ?? "not set (PUBLIC_BASE_URL / ZIPTEAMS_WEBHOOK_SECRET)",
       salesa: clients.salesa.configured ? "configured" : "missing SALESA_API_KEY",
     })),
+  );
+
+  server.registerTool(
+    "connections_selftest",
+    {
+      title: "End-to-end connection self-test",
+      description: "Read-only checks against LeadSquared (users, activity types, recent leads, tasks), Salesa (transcripts for a sample phone) and the Zipteams key. Creates nothing.",
+      inputSchema: { samplePhone: z.string().optional().describe("A phone number known to LeadSquared and Salesa") },
+      annotations: READ,
+    },
+    guard(async ({ samplePhone }) => runSelfTest(clients, { samplePhone, zipteamsApiKey: clients.zipteamsApiKey })),
   );
 
   // ---------------- LeadSquared ----------------
