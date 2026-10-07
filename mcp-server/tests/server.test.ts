@@ -31,20 +31,30 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body));
     if (body.Paging?.PageIndex > 1) return new Response("[]");
     const day = (n: number) => new Date(Date.now() - n * 86_400_000 + 330 * 60_000).toISOString().slice(0, 19).replace("T", " ");
-    return new Response(JSON.stringify([
-      { ProspectID: "A", FirstName: "Hot", Phone: "+91-7805955245", ProspectStage: "Opportunity", Score: "60", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(0.5) },
-      { ProspectID: "B", FirstName: "Warm", Phone: "9213579137", ProspectStage: "Prospect", Score: "20", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(2) },
-      { ProspectID: "C", FirstName: "Other", Phone: "9000000000", ProspectStage: "Opportunity", Score: "90", OwnerIdEmailAddress: "someone@x.com", ModifiedOn: day(1) },
-      { ProspectID: "D", FirstName: "Won", Phone: "9111111111", ProspectStage: "Customer", Score: "99", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(1) },
-      { ProspectID: "E", FirstName: "Old", Phone: "9222222222", ProspectStage: "Opportunity", Score: "99", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(9) },
-    ]));
+    const all = [
+      { ProspectID: "A", FirstName: "Hot", Phone: "+91-7805955245", ProspectStage: "Follow Up For Closure", Score: "60", OwnerId: "U1", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(0.5), mx_Zip_Intent_Type: "HIGH", mx_Zip_Intent_Score: "80", mx_Lead_category: "Hot" },
+      { ProspectID: "B", FirstName: "Warm", Phone: "9213579137", ProspectStage: "Call Back Later", Score: "20", OwnerId: "U1", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(2) },
+      { ProspectID: "C", FirstName: "Other", Phone: "9000000000", ProspectStage: "Follow Up For Closure", Score: "90", OwnerId: "U2", OwnerIdEmailAddress: "someone@x.com", ModifiedOn: day(1) },
+      { ProspectID: "D", FirstName: "Won", Phone: "9111111111", ProspectStage: "Course Enrolled", Score: "99", OwnerId: "U1", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(1) },
+      { ProspectID: "E", FirstName: "Old", Phone: "9222222222", ProspectStage: "Follow Up For Closure", Score: "99", OwnerId: "U1", OwnerIdEmailAddress: "elite1@x.com", ModifiedOn: day(9) },
+    ];
+    const owner = body.Parameter?.LookupName === "OwnerId" ? body.Parameter.LookupValue : null;
+    return new Response(JSON.stringify(owner ? all.filter((l) => l.OwnerId === owner) : all));
   }
   if (url.includes("ProspectActivity.svc/Retrieve"))
     return new Response(JSON.stringify({ RecordCount: url.includes("leadId=A") ? 6 : 1, ProspectActivities: url.includes("leadId=A") ? [1, 2, 3, 4, 5, 6] : [1] }));
+  if (url.includes("Users.Get"))
+    return new Response(JSON.stringify([{ ID: "U1", FirstName: "Elite", LastName: "One", EmailAddress: "elite1@x.com" }, { ID: "U2", FirstName: "Some", LastName: "One", EmailAddress: "someone@x.com" }]));
   if (url.includes("RetrieveLeadByPhoneNumber"))
     return new Response(JSON.stringify([{ ProspectID: "77", FirstName: "Ravi", Phone: "+91-7805955245", Mobile: "9213579137" }]));
   if (url.includes("search-by-numbers-v1"))
-    return new Response(JSON.stringify({ data: [{ phone: "917805955245", transcript: "hello" }, { phone: "917805955245", transcript: "again" }, { phone: "919213579137", transcript: "hi" }] }));
+    return new Response(JSON.stringify({
+      "917805955245": { sales_call: [
+        { caller_id: "91917805955245", start_time: "2026-10-01T10:00:00.000Z", call_duration: 41, agent_name: "A", s3_audio_file_url: "https://x/1.mp3", transcript: { text: "hello" } },
+        { caller_id: "91917805955245", start_time: "2026-10-03T10:00:00.000Z", call_duration: 474, agent_name: "B", s3_audio_file_url: "https://x/2.mp3", transcript: { text: "again " + "x".repeat(5000) } },
+      ] },
+      "919213579137": { sales_call: [{ start_time: "2026-10-02T10:00:00.000Z", transcript: { text: "hi" } }] },
+    }));
   if (url.includes("calls-webhook-ingestion-handler")) return new Response(JSON.stringify({ message: "Data Received Successfully" }));
   if (url.includes("/partner/ingest/")) return new Response(JSON.stringify({ success: true }));
   if (url.includes("Lead.Update")) return new Response(JSON.stringify({ Status: "Success", Message: { AffectedRows: 1 } }));
@@ -96,7 +106,9 @@ test("lead_call_transcripts joins LeadSquared phone fields to Salesa", async () 
   const out = JSON.parse((r.content as { text: string }[])[0].text);
   assert.equal(out.lead.ProspectID, "77");
   assert.deepEqual(out.numbersQueried, ["+91-7805955245", "9213579137", "7805955245"]);
-  assert.equal(out.transcripts.data[0].transcript, "hello");
+  assert.equal(out.transcripts.phones["917805955245"], 2);
+  assert.equal(out.transcripts.calls[0].agent, "B", "newest first");
+  assert.match(out.transcripts.calls[0].transcript, /truncated 1006 chars/);
   await client.close();
 });
 
@@ -207,8 +219,13 @@ test("rank_leads_by_conversion filters by owner, window and stage, and enriches 
   const B = out.leads.find((l: { ProspectID: string }) => l.ProspectID === "B");
   assert.equal(A.signals.salesaAnsweredCalls, 2);
   assert.equal(A.signals.activitiesRecent, 6);
-  assert.equal(B.signals.zipteamsIntent, "INTERESTED");
+  assert.equal(A.signals.zipIntentTypeW, 20, "HIGH from LeadSquared field");
+  assert.equal(A.signals.zipIntentScoreW, 12);
+  assert.equal(A.signals.leadCategoryW, 10);
+  assert.equal(B.signals.zipteamsIntent, "INTERESTED", "webhook intent used only when LeadSquared has none");
   assert.ok(B.signals.zipteamsIntentScoreW === 16);
+  assert.ok(A.score > B.score);
+  assert.equal(out.owners.U1, "Elite One");
   assert.ok(typeof out.scoring === "string");
   await client.close();
 });

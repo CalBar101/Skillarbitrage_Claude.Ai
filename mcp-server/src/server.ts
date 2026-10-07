@@ -504,10 +504,12 @@ export function createServer(clients: Clients): McpServer {
       inputSchema: {
         numbers: phoneList,
         callStatus: z.string().optional().describe("Filter, e.g. 'answered'. Omit for all statuses."),
+        maxCalls: z.number().int().min(1).max(50).optional().describe("Newest calls to return. Default 10"),
+        maxChars: z.number().int().min(200).max(20000).optional().describe("Transcript characters per call. Default 4000"),
       },
       annotations: READ,
     },
-    guard(async ({ numbers, callStatus }) => clients.salesa.searchByNumbers(numbers, callStatus ?? "answered")),
+    guard(async ({ numbers, callStatus, maxCalls, maxChars }) => clients.salesa.searchByNumbers(numbers, callStatus ?? "answered", { maxCalls, maxChars })),
   );
 
   server.registerTool(
@@ -532,10 +534,12 @@ export function createServer(clients: Clients): McpServer {
         email: z.string().optional(),
         phone: z.string().optional(),
         callStatus: z.string().optional(),
+        maxCalls: z.number().int().min(1).max(50).optional().describe("Newest calls to return. Default 10"),
+        maxChars: z.number().int().min(200).max(20000).optional().describe("Transcript characters per call. Default 4000"),
       },
       annotations: READ,
     },
-    guard(async ({ leadId, email, phone, callStatus }) => {
+    guard(async ({ leadId, email, phone, callStatus, maxCalls, maxChars }) => {
       const c = lsq();
       const leads = leadId ? await c.getLeadById(leadId) : email ? await c.getLeadByEmail(email) : phone ? await c.getLeadByPhone(phone) : null;
       if (!leads) throw new Error("Provide one of leadId, email or phone.");
@@ -543,7 +547,7 @@ export function createServer(clients: Clients): McpServer {
       if (!lead) throw new Error("No matching lead in LeadSquared.");
       const numbers = [...new Set([lead.Phone, lead.Mobile, phone].filter((v): v is string => typeof v === "string" && v.trim() !== ""))];
       if (numbers.length === 0) throw new Error("Lead has no Phone or Mobile to look up transcripts with.");
-      const transcripts = await clients.salesa.searchByNumbers(numbers, callStatus ?? "answered");
+      const transcripts = await clients.salesa.searchByNumbers(numbers, callStatus ?? "answered", { maxCalls, maxChars });
       return {
         lead: {
           ProspectID: lead.ProspectID,

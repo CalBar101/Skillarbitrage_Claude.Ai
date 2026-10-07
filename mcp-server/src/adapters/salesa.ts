@@ -27,11 +27,17 @@ export class SalesaClient {
     return this.rest.configured;
   }
 
-  /** API 1: transcripts for one or more phone numbers. */
-  searchByNumbers(numbers: string[], callStatus?: string) {
-    return this.rest.request<unknown>("GET", "/webhook/search-by-numbers-v1", {
+  /** API 1: transcripts for one or more phone numbers, raw. Shape: { "<91phone>": { sales_call: SalesaCall[] } } */
+  searchByNumbersRaw(numbers: string[], callStatus?: string) {
+    return this.rest.request<SalesaRaw>("GET", "/webhook/search-by-numbers-v1", {
       query: { numbers: numbers.map(normalisePhone).join(","), call_status: callStatus },
     });
+  }
+
+  /** API 1, compacted: newest calls first, transcript text truncated. */
+  async searchByNumbers(numbers: string[], callStatus?: string, opts: { maxCalls?: number; maxChars?: number } = {}) {
+    const raw = await this.searchByNumbersRaw(numbers, callStatus);
+    return compactSalesa(raw, opts);
   }
 
   /** API 2: ask Salesa to transcribe pending calls for these phones. */
@@ -40,4 +46,58 @@ export class SalesaClient {
       body: phones.map((p) => ({ student_phone: normalisePhone(p) })),
     });
   }
+}
+
+export interface SalesaCall {
+  caller_id?: string;
+  start_time?: string;
+  end_time?: string;
+  call_duration?: number;
+  agent_name?: string;
+  s3_transcript_url?: string | null;
+  s3_audio_file_url?: string | null;
+  createdAt?: string;
+  transcript?: { text?: string } | string | null;
+  [k: string]: unknown;
+}
+export type SalesaRaw = Record<string, { sales_call?: SalesaCall[]; [k: string]: unknown } | SalesaCall[] | unknown>;
+
+export interface CompactCall {
+  phone: string;
+  startTime?: string;
+  durationSec?: number;
+  agent?: string;
+  audioUrl?: string | null;
+  transcriptUrl?: string | null;
+  transcriptChars: number;
+  transcript: string;
+}
+
+/** Flatten Salesa's per-phone map into a list of calls, newest first, with transcript text bounded. */
+export function compactSalesa(raw: SalesaRaw | unknown, opts: { maxCalls?: number; maxChars?: number } = {}): { phones: Record<string, number>; calls: CompactCall[] } {
+  const maxCalls = opts.maxCalls ?? 10;
+  const maxChars = opts.maxChars ?? 4000;
+  const calls: CompactCall[] = [];
+  const phones: Record<string, number> = {};
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [phone, v] of Object.entries(raw as Record<string, unknown>)) {
+      const list: SalesaCall[] = Array.isArray(v) ? (v as SalesaCall[]) : Array.isArray((v as { sales_call?: unknown })?.sales_call) ? ((v as { sales_call: SalesaCall[] }).sales_call) : [];
+      phones[phone] = list.length;
+      for (const c of list) {
+        const t = typeof c.transcript === "string" ? c.transcript : c.transcript?.text ?? "";
+        calls.push({
+          phone,
+          startTime: c.start_time,
+          durationSec: typeof c.call_duration === "number" ? c.call_duration : undefined,
+          agent: c.agent_name,
+          audioUrl: c.s3_audio_file_url ?? null,
+          transcriptUrl: c.s3_transcript_url ?? null,
+          transcriptChars: t.length,
+          transcript: t.length > maxChars ? t.slice(0, maxChars) + ` …[truncated ${t.length - maxChars} chars]` : t,
+        });
+      }
+    }
+  }
+  calls.sort((a, b) => (a.startTime ?? "") < (b.startTime ?? "") ? 1 : -1);
+  return { phones, calls: calls.slice(0, maxCalls) };
 }

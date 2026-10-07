@@ -37,27 +37,28 @@ export interface RankedLead {
   signals: Record<string, number | string>;
 }
 
+/** Weights for this account's ProspectStage values (0-30 = closer to paying). */
 const DEFAULT_STAGE_WEIGHTS: Record<string, number> = {
-  lead: 5,
-  prospect: 10,
-  "qualified lead": 15,
-  qualified: 15,
-  opportunity: 25,
-  "hot lead": 25,
-  hot: 25,
-  negotiation: 30,
-  "proposal sent": 25,
-  "demo done": 20,
-  "payment pending": 30,
-  customer: 0,
-  converted: 0,
-  "not interested": 0,
-  junk: 0,
-  "do not call": 0,
+  "booking fees received": 30,
+  "loan pending": 28,
+  "follow up for closure": 25,
+  "counselled lead": 20,
+  "roadmap done": 20,
+  "discovery call done": 15,
+  "opportunity created": 15,
+  "re-enquired lead": 10,
+  "may buy later": 10,
+  "call back later": 8,
+  "new lead": 5,
+  "roadmap dnp": 3,
+  "call not picking up": 2,
+  "call not connected": 2,
 };
-const DEFAULT_EXCLUDE = ["customer", "converted", "not interested", "junk", "do not call", "invalid", "lost"];
+const DEFAULT_EXCLUDE = ["course enrolled", "collections done", "not interested", "invalid", "irrelevant lead", "support query"];
+const ZIP_INTENT_W: Record<string, number> = { high: 20, moderate: 10, neutral: 0, low: -5, not_qualified: -15 };
+const LEAD_CATEGORY_W: Record<string, number> = { hot: 10, warm: 5, cold: -5 };
 
-const lower = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+const lower = (v: unknown) => (typeof v === "string" ? v.trim().replace(/\u00a0/g, " ").toLowerCase() : "");
 const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v)) ? Number(v) : undefined);
 
 export async function rankLeads(clients: Clients, o: RankOptions) {
@@ -70,37 +71,62 @@ export async function rankLeads(clients: Clients, o: RankOptions) {
   const ownerEmails = new Set((o.ownerEmails ?? []).map((e) => e.toLowerCase()));
   const ownerIds = new Set(o.ownerIds ?? []);
 
-  // 1. Scan leads modified in the window, newest first. One filter max per LeadSquared query, so team filter is server-side when given, owners client-side.
-  const columns = "ProspectID,FirstName,LastName,EmailAddress,Phone,Mobile,ProspectStage,Score,OwnerId,OwnerIdName,OwnerIdEmailAddress,ModifiedOn,CreatedOn,Source,LastActivity,LastActivityDate" + (o.teamField ? `,${o.teamField.field}` : "");
+  // 1. Resolve owner emails to ids (LeadSquared filters on OwnerId), then scan per owner, newest-modified first,
+  //    stopping at the window cutoff. A global scan would never reach 7 days back on a busy account.
+  const columns =
+    "ProspectID,FirstName,LastName,EmailAddress,Phone,Mobile,ProspectStage,Score,OwnerId,OwnerIdName,OwnerIdEmailAddress,ModifiedOn,CreatedOn,Source,LastActivity,LastActivityDate,mx_Zip_Intent_Type,mx_Zip_Intent_Score,mx_Zip_AI_Disposition,mx_Zip_Objection_Category,mx_Lead_category,mx_Call_Connected_Status,mx_Enquired_Course" +
+    (o.teamField ? `,${o.teamField.field}` : "");
+  const resolvedOwnerIds = new Set(ownerIds);
+  const ownerNames: Record<string, string> = {};
+  if (ownerEmails.size) {
+    const users = (await lsq.listUsers()) as Record<string, unknown>[];
+    for (const u of users) {
+      const em = lower(u.EmailAddress);
+      if (ownerEmails.has(em) && typeof u.ID === "string") {
+        resolvedOwnerIds.add(u.ID);
+        ownerNames[u.ID] = `${u.FirstName ?? ""} ${u.LastName ?? ""}`.trim();
+      }
+    }
+    const missing = [...ownerEmails].filter((e) => !Object.values(ownerNames).length || ![...users].some((u) => lower(u.EmailAddress) === e));
+    if (missing.length) ownerNames["_unresolvedEmails"] = missing.join(", ");
+  }
   const scanned: Record<string, unknown>[] = [];
   const pageSize = 100;
-  for (let page = 1; scanned.length < o.scanLimit; page++) {
-    const rows = (await lsq.searchLeads({
-      Parameter: o.teamField ? { LookupName: o.teamField.field, LookupValue: o.teamField.value, SqlOperator: "=" } : undefined,
-      Columns: { Include_CSV: columns },
-      Sorting: { ColumnName: "ModifiedOn", Direction: "1" },
-      Paging: { PageIndex: page, PageSize: pageSize },
-    })) as Record<string, unknown>[];
-    if (!Array.isArray(rows) || rows.length === 0) break;
-    let stop = false;
-    for (const r of rows) {
-      if (typeof r.ModifiedOn === "string" && r.ModifiedOn < cutoffLocal) {
-        stop = true;
-        break;
+  const scanOne = async (param?: { LookupName: string; LookupValue: string; SqlOperator: string }) => {
+    for (let page = 1; scanned.length < o.scanLimit; page++) {
+      const rows = (await lsq.searchLeads({
+        Parameter: param,
+        Columns: { Include_CSV: columns },
+        Sorting: { ColumnName: "ModifiedOn", Direction: "1" },
+        Paging: { PageIndex: page, PageSize: pageSize },
+      })) as Record<string, unknown>[];
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      let stop = false;
+      for (const r of rows) {
+        if (typeof r.ModifiedOn === "string" && r.ModifiedOn < cutoffLocal) {
+          stop = true;
+          break;
+        }
+        scanned.push(r);
       }
-      scanned.push(r);
+      if (stop || rows.length < pageSize) break;
     }
-    if (stop || rows.length < pageSize) break;
+  };
+  if (resolvedOwnerIds.size) {
+    for (const id of resolvedOwnerIds) await scanOne({ LookupName: "OwnerId", LookupValue: id, SqlOperator: "=" });
+  } else {
+    await scanOne(o.teamField ? { LookupName: o.teamField.field, LookupValue: o.teamField.value, SqlOperator: "=" } : undefined);
   }
 
   // 2. Team / owner / stage filter and the cheap part of the score.
   const prelim = scanned
     .filter((r) => {
-      if (ownerEmails.size || ownerIds.size) {
+      if (resolvedOwnerIds.size) {
         const em = lower(r.OwnerIdEmailAddress);
         const id = typeof r.OwnerId === "string" ? r.OwnerId : "";
-        if (!(ownerEmails.has(em) || ownerIds.has(id))) return false;
+        if (!(ownerEmails.has(em) || resolvedOwnerIds.has(id))) return false;
       }
+      if (o.teamField && lower(r[o.teamField.field]) !== lower(o.teamField.value)) return false;
       return !exclude.has(lower(r.ProspectStage));
     })
     .map((r) => {
@@ -111,18 +137,41 @@ export async function rankLeads(clients: Clients, o: RankOptions) {
       const lastAct = typeof r.LastActivityDate === "string" ? r.LastActivityDate : typeof r.ModifiedOn === "string" ? r.ModifiedOn : undefined;
       const daysSince = lastAct ? (now - (new Date(lastAct.replace(" ", "T") + "Z").getTime() - o.tzOffsetMinutes * 60_000)) / 86_400_000 : 99;
       const recencyW = daysSince <= 1 ? 10 : daysSince <= 3 ? 6 : daysSince <= 7 ? 3 : 0;
+      // Zipteams results already synced into LeadSquared by the existing connector.
+      const zipType = lower(r.mx_Zip_Intent_Type);
+      const zipTypeW = ZIP_INTENT_W[zipType] ?? 0;
+      const zipScore = num(r.mx_Zip_Intent_Score);
+      const zipScoreW = zipScore === undefined ? 0 : Math.round((Math.max(0, Math.min(100, zipScore)) / 100) * 15);
+      const catW = LEAD_CATEGORY_W[lower(r.mx_Lead_category)] ?? 0;
+      const callDoneW = lower(r.mx_Call_Connected_Status) === "call done" ? 5 : 0;
       const lead: RankedLead = {
         ProspectID: String(r.ProspectID),
         name: `${r.FirstName ?? ""} ${r.LastName ?? ""}`.trim(),
         email: typeof r.EmailAddress === "string" ? r.EmailAddress : undefined,
         phone: typeof r.Phone === "string" && r.Phone ? r.Phone : typeof r.Mobile === "string" ? r.Mobile : undefined,
         stage: typeof r.ProspectStage === "string" ? r.ProspectStage : undefined,
-        owner: typeof r.OwnerIdName === "string" ? r.OwnerIdName : undefined,
+        owner: typeof r.OwnerIdName === "string" ? r.OwnerIdName : ownerNames[String(r.OwnerId)],
         ownerEmail: typeof r.OwnerIdEmailAddress === "string" ? r.OwnerIdEmailAddress : undefined,
         leadScore,
         modifiedOn: typeof r.ModifiedOn === "string" ? r.ModifiedOn : undefined,
-        score: stageW + leadScoreW + recencyW,
-        signals: { stage: stageW, leadScore: leadScoreW, recency: recencyW, daysSinceActivity: Math.round(daysSince * 10) / 10 },
+        score: stageW + leadScoreW + recencyW + zipTypeW + zipScoreW + catW + callDoneW,
+        signals: {
+          stage: stageW,
+          leadScore: leadScoreW,
+          recency: recencyW,
+          daysSinceActivity: Math.round(daysSince * 10) / 10,
+          zipIntentType: typeof r.mx_Zip_Intent_Type === "string" ? r.mx_Zip_Intent_Type : "",
+          zipIntentTypeW: zipTypeW,
+          zipIntentScore: zipScore ?? "",
+          zipIntentScoreW: zipScoreW,
+          zipAiDisposition: typeof r.mx_Zip_AI_Disposition === "string" ? r.mx_Zip_AI_Disposition : "",
+          zipObjection: typeof r.mx_Zip_Objection_Category === "string" ? r.mx_Zip_Objection_Category : "",
+          leadCategory: typeof r.mx_Lead_category === "string" ? r.mx_Lead_category : "",
+          leadCategoryW: catW,
+          callConnected: typeof r.mx_Call_Connected_Status === "string" ? r.mx_Call_Connected_Status : "",
+          callDoneW,
+          course: typeof r.mx_Enquired_Course === "string" ? r.mx_Enquired_Course : "",
+        },
       };
       return lead;
     })
@@ -135,8 +184,11 @@ export async function rankLeads(clients: Clients, o: RankOptions) {
   let salesaNote = "not configured";
   if (clients.salesa.configured && phones.length) {
     try {
-      const raw = await clients.salesa.searchByNumbers(phones, "answered");
-      salesaByPhone = countByPhone(raw, phones);
+      for (let i = 0; i < phones.length; i += 25) {
+        const chunk = phones.slice(i, i + 25);
+        const { phones: counts } = await clients.salesa.searchByNumbers(chunk, "answered", { maxCalls: 0 });
+        for (const [p, n] of Object.entries(counts)) salesaByPhone[normalisePhone(p)] = n;
+      }
       salesaNote = `queried ${phones.length} numbers`;
     } catch (e) {
       salesaNote = `error: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
@@ -146,7 +198,7 @@ export async function rankLeads(clients: Clients, o: RankOptions) {
   await Promise.all(
     prelim.map(async (l) => {
       const zt = await clients.store.getCustomerSummary({ phone: l.phone, email: l.email, customerId: l.ProspectID }).catch(() => null);
-      if (zt) {
+      if (zt && !l.signals.zipIntentType) {
         const intent = lower(zt.payload.intent);
         const intentW = intent.includes("interested") && !intent.includes("not") ? 20 : intent.includes("hot") ? 25 : intent === "" ? 0 : -10;
         const is = num(zt.payload.intent_score);
@@ -181,24 +233,10 @@ export async function rankLeads(clients: Clients, o: RankOptions) {
     afterFilters: prelim.length,
     filters: { ownerEmails: [...ownerEmails], ownerIds: [...ownerIds], teamField: o.teamField ?? null, excludedStages: [...exclude] },
     salesa: salesaNote,
-    scoring: "stage(0-30) + leadScore(0-15) + recency(0-10) + activities(0-10) + salesaCalls(0-15) + zipteamsIntent(-10..25) + zipteamsIntentScore(0-20)",
+    owners: ownerNames,
+    scoring:
+      "stage(0-30) + leadScore(0-15) + recency(0-10) + zipIntentType(-15..20, from LeadSquared mx_Zip_Intent_Type) + zipIntentScore(0-15) + leadCategory(-5..10) + callDone(0-5) + activities(0-10) + salesaAnsweredCalls(0-15); Zipteams webhook intent only used when LeadSquared has no Zip fields",
     leads: prelim,
   };
 }
 
-/** Count Salesa transcript records per normalised phone. Shape-agnostic: any object whose JSON mentions the number counts once. */
-function countByPhone(raw: unknown, phones: string[]): Record<string, number> {
-  const out: Record<string, number> = {};
-  const items: unknown[] = Array.isArray(raw)
-    ? raw
-    : raw && typeof raw === "object"
-      ? (Object.values(raw as Record<string, unknown>).find(Array.isArray) as unknown[] | undefined) ?? []
-      : [];
-  for (const it of items) {
-    const s = JSON.stringify(it).replace(/\D/g, " ");
-    for (const p of phones) {
-      if (s.includes(p) || s.includes(p.replace(/^91/, ""))) out[p] = (out[p] ?? 0) + 1;
-    }
-  }
-  return out;
-}

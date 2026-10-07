@@ -63,7 +63,7 @@ export async function runSelfTest(clients: Clients, opts: { samplePhone?: string
   if (!clients.salesa.configured) results.salesa = "not configured";
   else if (opts.samplePhone) {
     results.salesa_transcripts = await check(async () => {
-      const r = await clients.salesa.searchByNumbers([opts.samplePhone!], "answered");
+      const r = await clients.salesa.searchByNumbers([opts.samplePhone!], "answered", { maxCalls: 2, maxChars: 300 });
       const s = JSON.stringify(r);
       return { bytes: s.length, topLevelKeys: typeof r === "object" && r ? Object.keys(r as object) : typeof r, preview: s.slice(0, 1500) };
     });
