@@ -45,7 +45,9 @@ export default {
         return new Response("Invalid JSON", { status: 400 });
       }
       const { store } = buildClients(env);
-      if (payload.type === "CALL_SUMMARY" && typeof payload.call_id === "string") {
+      // Customer API callbacks carry type=CALL_SUMMARY; Partner API callbacks carry call_id with no type.
+      if ((payload.type === "CALL_SUMMARY" || payload.type === undefined) && typeof payload.call_id === "string") {
+        payload.type = "CALL_SUMMARY";
         await store.saveCallSummary(payload as unknown as CallSummary);
       } else if (payload.type === "CUSTOMER_SUMMARY") {
         await store.saveCustomerSummary(payload as unknown as CustomerSummary);

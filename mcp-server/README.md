@@ -24,6 +24,13 @@ claude.ai, Claude Desktop, or Claude Code.
 | `zipteams_call_insights` / `zipteams_customer_insights` / `zipteams_recent_insights` | Read the AI analysis Zipteams posted back (stored in KV) |
 | `daily_rundown` | LeadSquared tasks due/overdue, leads modified in 24h, Zipteams insights in 24h |
 
+## Zipteams credentials
+
+Two styles exist. A single `x-zip-api-key` uses the Customer API. A key + secret + tenant id +
+sub-tenant id uses the Partner API (batch call ingestion with required `end_time` and
+`customer.id`, disposition update by `customer_id`). Both are issued by Zipteams at onboarding;
+they are not in the public docs.
+
 ## Zipteams callbacks
 
 Zipteams has no read API. It POSTs `CALL_SUMMARY` and `CUSTOMER_SUMMARY` payloads to
@@ -43,6 +50,10 @@ npx wrangler secret put MCP_AUTH_TOKEN
 npx wrangler secret put LEADSQUARED_ACCESS_KEY
 npx wrangler secret put LEADSQUARED_SECRET_KEY
 npx wrangler secret put ZIPTEAMS_API_KEY
+# Partner API credentials only (all three switch the client to Partner endpoints):
+npx wrangler secret put ZIPTEAMS_API_SECRET
+npx wrangler secret put ZIPTEAMS_TENANT_ID
+npx wrangler secret put ZIPTEAMS_SUB_TENANT_ID
 npx wrangler secret put ZIPTEAMS_WEBHOOK_SECRET   # openssl rand -hex 24
 npx wrangler secret put SALESA_API_KEY
 

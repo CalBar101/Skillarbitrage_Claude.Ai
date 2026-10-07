@@ -13,6 +13,10 @@ export interface Env {
   LEADSQUARED_ACCESS_KEY?: string;
   LEADSQUARED_SECRET_KEY?: string;
   ZIPTEAMS_API_KEY?: string;
+  /** Partner API only. When all three are set with the key, Partner endpoints are used. */
+  ZIPTEAMS_API_SECRET?: string;
+  ZIPTEAMS_TENANT_ID?: string;
+  ZIPTEAMS_SUB_TENANT_ID?: string;
   /** Secret path segment Zipteams must use when calling our webhook. */
   ZIPTEAMS_WEBHOOK_SECRET?: string;
   /** Public URL of this Worker, used to build callback URLs. */
@@ -44,7 +48,13 @@ export function buildClients(env: Env, fetchImpl?: FetchLike): Clients {
             fetch: fetchImpl,
           })
         : undefined,
-    zipteams: new ZipteamsClient({ apiKey: env.ZIPTEAMS_API_KEY, fetch: fetchImpl }),
+    zipteams: new ZipteamsClient({
+      apiKey: env.ZIPTEAMS_API_KEY,
+      apiSecret: env.ZIPTEAMS_API_SECRET,
+      tenantId: env.ZIPTEAMS_TENANT_ID,
+      subTenantId: env.ZIPTEAMS_SUB_TENANT_ID,
+      fetch: fetchImpl,
+    }),
     salesa: new SalesaClient({ baseUrl: env.SALESA_BASE_URL, apiKey: env.SALESA_API_KEY, fetch: fetchImpl }),
     store: new KVInsightsStore(env.INSIGHTS ?? new MemoryKV()),
     zipteamsCallbackUrl:
@@ -102,7 +112,7 @@ export function createServer(clients: Clients): McpServer {
     },
     guard(async () => ({
       leadsquared: clients.leadsquared ? "configured" : "missing LEADSQUARED_ACCESS_KEY / LEADSQUARED_SECRET_KEY",
-      zipteams: clients.zipteams.configured ? "configured" : "missing ZIPTEAMS_API_KEY",
+      zipteams: clients.zipteams.configured ? `configured (${clients.zipteams.mode} API)` : "missing ZIPTEAMS_API_KEY",
       zipteamsCallbackUrl: clients.zipteamsCallbackUrl ?? "not set (PUBLIC_BASE_URL / ZIPTEAMS_WEBHOOK_SECRET)",
       salesa: clients.salesa.configured ? "configured" : "missing SALESA_API_KEY",
     })),
@@ -337,9 +347,10 @@ export function createServer(clients: Clients): McpServer {
               callId: z.string(),
               recordingUrl: z.string().url().describe("Publicly reachable MP3/WAV/AAC/M4A/MP4 URL"),
               startTime: z.string().describe("ISO 8601 with timezone, e.g. 2026-07-28T14:45:00+05:30"),
-              phone: z.string().optional().describe("Customer phone; required unless customerEmail given"),
-              agent: agentSchema,
-              customerId: z.string().optional().describe("Your CRM id, e.g. the LeadSquared ProspectID. Echoed back in callbacks."),
+              endTime: z.string().optional().describe("ISO 8601 with timezone. Required with Partner API credentials; ignored otherwise"),
+              phone: z.string().optional().describe("Customer phone; required with Partner credentials, else required unless customerEmail given"),
+              agent: agentSchema.extend({ name: z.string().optional() }),
+              customerId: z.string().optional().describe("Your CRM id, e.g. the LeadSquared ProspectID. Required with Partner credentials. Echoed back in callbacks."),
               customerName: z.string().optional(),
               customerEmail: z.string().optional(),
               dispositionStatus: z.string().optional(),
@@ -356,7 +367,7 @@ export function createServer(clients: Clients): McpServer {
     guard(async ({ calls }) =>
       clients.zipteams.syncCalls(
         calls.map((c) => ({
-          call: { id: c.callId, recording_url: c.recordingUrl, start_time: c.startTime, phone_number: c.phone, access_type: c.accessType },
+          call: { id: c.callId, recording_url: c.recordingUrl, start_time: c.startTime, end_time: c.endTime, phone_number: c.phone, access_type: c.accessType },
           agent: c.agent,
           customer: { id: c.customerId, name: c.customerName, email: c.customerEmail, disposition_status: c.dispositionStatus },
           custom_fields: c.customFields,
@@ -398,7 +409,7 @@ export function createServer(clients: Clients): McpServer {
     "zipteams_update_disposition",
     {
       title: "Update a Zipteams customer's disposition status",
-      description: "Update status / conversation-level custom fields on a customer that already exists in Zipteams, without sending a call. Confirm with the user first.",
+      description: "Update status / custom fields on a customer that already exists in Zipteams, without sending a call. With Partner credentials only customerId and dispositionStatus are used. Confirm with the user first.",
       inputSchema: {
         agent: agentSchema,
         phone: z.string().optional(),

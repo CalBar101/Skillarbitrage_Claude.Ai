@@ -32,6 +32,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.includes("search-by-numbers-v1"))
     return new Response(JSON.stringify({ data: [{ phone: "917805955245", transcript: "hello" }] }));
   if (url.includes("calls-webhook-ingestion-handler")) return new Response(JSON.stringify({ message: "Data Received Successfully" }));
+  if (url.includes("/partner/ingest/")) return new Response(JSON.stringify({ success: true }));
   if (url.includes("Lead.Update")) return new Response(JSON.stringify({ Status: "Success", Message: { AffectedRows: 1 } }));
   return new Response("not found", { status: 404 });
 }) as typeof fetch;
@@ -130,6 +131,53 @@ test("zipteams webhook stores callbacks that tools can read back", async () => {
   assert.equal(rd.zipteams.calls.length, 1);
   assert.ok(rd.leadsquared.tasksDueOrOverdue.error, "stubbed LSQ returns 404 for tasks; section must report, not throw");
   await client.close();
+});
+
+test("partner credentials switch to the Partner API with UTC times and contact_number", async () => {
+  const partnerEnv = { ...env, ZIPTEAMS_API_SECRET: "sec", ZIPTEAMS_TENANT_ID: "t1", ZIPTEAMS_SUB_TENANT_ID: "st1", MCP_AUTH_TOKEN: "partner-token" };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.startsWith("http://partner.test")) return worker.fetch(new Request(input, init), partnerEnv as never);
+    return origFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const client = new Client({ name: "t", version: "0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL("http://partner.test/mcp/partner-token")));
+    const status = JSON.parse((await client.callTool({ name: "connections_status", arguments: {} })).content[0].text);
+    assert.match(status.zipteams, /partner API/);
+    const missing = await client.callTool({
+      name: "zipteams_sync_call",
+      arguments: { calls: [{ callId: "p1", recordingUrl: "https://rec.example/1.mp3", startTime: "2026-10-07T10:00:00+05:30", phone: "7805955245", agent: { id: "A1", email: "rep@x.com" } }] },
+    });
+    assert.equal(missing.isError, true);
+    assert.match(missing.content[0].text, /end_time/);
+    const ok = await client.callTool({
+      name: "zipteams_sync_call",
+      arguments: { calls: [{ callId: "p1", recordingUrl: "https://rec.example/1.mp3", startTime: "2026-10-07T10:00:00+05:30", endTime: "2026-10-07T10:12:00+05:30", phone: "7805955245", customerId: "77", agent: { id: "A1", email: "rep@x.com" } }] },
+    });
+    assert.equal(ok.isError, undefined, ok.content[0].text);
+    const call = calls.find((c) => c.url.includes("/partner/ingest/batch-call"))!;
+    const h = call.init!.headers as Record<string, string>;
+    assert.deepEqual([h["x-api-key"], h["x-api-secret"], h["x-tenant-id"], h["x-sub-tenant-id"]], ["zip-key", "sec", "t1", "st1"]);
+    const body = JSON.parse(String(call.init!.body));
+    assert.equal(body.data[0].call.start_time, "2026-10-07T04:30:00Z");
+    assert.equal(body.data[0].call.contact_number, "+917805955245");
+    assert.equal(body.data[0].callback_url, "http://worker.test/webhooks/zipteams/hook-secret");
+    const disp = await client.callTool({ name: "zipteams_update_disposition", arguments: { agent: { id: "A1", email: "rep@x.com" }, customerId: "77", dispositionStatus: "interested" } });
+    assert.equal(disp.isError, undefined, disp.content[0].text);
+    const put = calls.find((c) => c.url.includes("/partner/ingest/disposition-status"))!;
+    assert.equal(put.init!.method, "PUT");
+    assert.deepEqual(JSON.parse(String(put.init!.body)), { customer_id: "77", disposition_status: "interested" });
+    // Partner callbacks have no `type`; the webhook must still store them as call summaries.
+    const cb = await worker.fetch(new Request("http://worker.test/webhooks/zipteams/hook-secret", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ call_id: "p1", intent: "INTERESTED" }) }), partnerEnv as never);
+    assert.equal(cb.status, 200);
+    const stored = JSON.parse((await client.callTool({ name: "zipteams_call_insights", arguments: { callId: "p1" } })).content[0].text);
+    assert.equal(stored.payload.intent, "INTERESTED");
+    await client.close();
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
 
 test("unconfigured services report cleanly instead of throwing", async () => {
