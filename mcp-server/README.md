@@ -16,7 +16,10 @@ claude.ai, Claude Desktop, or Claude Code.
 | `leadsquared_activity_types` / `_lead_activities` / `_log_activity` | Activity timeline and posting notes or meeting summaries |
 | `leadsquared_list_tasks` / `_create_task` / `_complete_task` | Follow-up tasks |
 | `leadsquared_users` | Owners for assignment |
-| `zipteams_api_request` / `salesa_api_request` | Raw REST calls until those APIs are mapped to typed tools |
+| `salesa_get_transcripts` | Call transcripts for one or more phone numbers (answered calls by default) |
+| `salesa_generate_transcripts` | Ask Salesa to transcribe pending calls for given phones |
+| `lead_call_transcripts` | Join: LeadSquared lead (by id, email or phone) plus its Salesa transcripts |
+| `zipteams_api_request` | Raw REST calls until the Zipteams API is mapped to typed tools |
 
 ## Deploy
 

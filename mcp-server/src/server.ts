@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { LeadSquaredClient, type LsqAttribute } from "./adapters/leadsquared.js";
 import { GenericRestClient } from "./adapters/generic.js";
+import { SalesaClient } from "./adapters/salesa.js";
 import { ApiError, redactUrl } from "./http.js";
 import type { FetchLike } from "./http.js";
 
@@ -19,7 +20,7 @@ export interface Env {
 export interface Clients {
   leadsquared?: LeadSquaredClient;
   zipteams: GenericRestClient;
-  salesa: GenericRestClient;
+  salesa: SalesaClient;
 }
 
 export function buildClients(env: Env, fetchImpl?: FetchLike): Clients {
@@ -39,12 +40,7 @@ export function buildClients(env: Env, fetchImpl?: FetchLike): Clients {
       apiKey: env.ZIPTEAMS_API_KEY,
       fetch: fetchImpl,
     }),
-    salesa: new GenericRestClient({
-      service: "Salesa",
-      baseUrl: env.SALESA_BASE_URL ?? "",
-      apiKey: env.SALESA_API_KEY,
-      fetch: fetchImpl,
-    }),
+    salesa: new SalesaClient({ baseUrl: env.SALESA_BASE_URL, apiKey: env.SALESA_API_KEY, fetch: fetchImpl }),
   };
 }
 
@@ -96,7 +92,7 @@ export function createServer(clients: Clients): McpServer {
     guard(async () => ({
       leadsquared: clients.leadsquared ? "configured" : "missing LEADSQUARED_ACCESS_KEY / LEADSQUARED_SECRET_KEY",
       zipteams: clients.zipteams.configured ? "configured" : "missing ZIPTEAMS_BASE_URL / ZIPTEAMS_API_KEY",
-      salesa: clients.salesa.configured ? "configured" : "missing SALESA_BASE_URL / SALESA_API_KEY",
+      salesa: clients.salesa.configured ? "configured" : "missing SALESA_API_KEY",
     })),
   );
 
@@ -313,29 +309,91 @@ export function createServer(clients: Clients): McpServer {
     guard(async () => lsq().listUsers()),
   );
 
-  // ---------------- Zipteams / Salesa (generic until API docs arrive) ----------------
-  for (const [name, client] of [
-    ["zipteams", clients.zipteams],
-    ["salesa", clients.salesa],
-  ] as const) {
-    server.registerTool(
-      `${name}_api_request`,
-      {
-        title: `${client.service} raw API request`,
-        description:
-          `Call any ${client.service} REST endpoint relative to its configured base URL. ` +
-          "Use GET for reads; only use write methods after confirming with the user. Typed tools replace this once the API is mapped.",
-        inputSchema: {
-          method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-          path: z.string().describe("Path relative to the base URL, e.g. /meetings"),
-          query: z.record(z.string(), z.string()).optional(),
-          body: z.unknown().optional(),
-        },
-        annotations: { ...WRITE, readOnlyHint: false },
+  // ---------------- Zipteams (generic until API docs arrive) ----------------
+  server.registerTool(
+    "zipteams_api_request",
+    {
+      title: "Zipteams raw API request",
+      description:
+        "Call any Zipteams REST endpoint relative to its configured base URL. Use GET for reads; only use write methods after confirming with the user.",
+      inputSchema: {
+        method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+        path: z.string().describe("Path relative to the base URL, e.g. /meetings"),
+        query: z.record(z.string(), z.string()).optional(),
+        body: z.unknown().optional(),
       },
-      guard(async ({ method, path, query, body }) => client.request(method, path, { query, body })),
-    );
-  }
+      annotations: WRITE,
+    },
+    guard(async ({ method, path, query, body }) => clients.zipteams.request(method, path, { query, body })),
+  );
+
+  // ---------------- Salesa (call transcripts) ----------------
+  const phoneList = z.array(z.string()).min(1).describe("Phone numbers in any format; 10-digit Indian numbers get the 91 prefix");
+
+  server.registerTool(
+    "salesa_get_transcripts",
+    {
+      title: "Salesa call transcripts by phone",
+      description: "Fetch call transcripts for one or more phone numbers. Defaults to answered calls only.",
+      inputSchema: {
+        numbers: phoneList,
+        callStatus: z.string().optional().describe("Filter, e.g. 'answered'. Omit for all statuses."),
+      },
+      annotations: READ,
+    },
+    guard(async ({ numbers, callStatus }) => clients.salesa.searchByNumbers(numbers, callStatus ?? "answered")),
+  );
+
+  server.registerTool(
+    "salesa_generate_transcripts",
+    {
+      title: "Salesa: transcribe pending calls",
+      description: "Ask Salesa to generate transcripts for calls on these phone numbers that have not been transcribed yet. Then re-run salesa_get_transcripts.",
+      inputSchema: { numbers: phoneList },
+      annotations: { ...WRITE, idempotentHint: true },
+    },
+    guard(async ({ numbers }) => clients.salesa.generateTranscripts(numbers)),
+  );
+
+  server.registerTool(
+    "lead_call_transcripts",
+    {
+      title: "Call transcripts for a LeadSquared lead",
+      description:
+        "Join LeadSquared and Salesa: find the lead by id, email or phone, take its Phone and Mobile numbers, and return its Salesa call transcripts alongside the lead summary. Use this before summarising a lead's calls or logging a call activity.",
+      inputSchema: {
+        leadId: z.string().optional(),
+        email: z.string().optional(),
+        phone: z.string().optional(),
+        callStatus: z.string().optional(),
+      },
+      annotations: READ,
+    },
+    guard(async ({ leadId, email, phone, callStatus }) => {
+      const c = lsq();
+      const leads = leadId ? await c.getLeadById(leadId) : email ? await c.getLeadByEmail(email) : phone ? await c.getLeadByPhone(phone) : null;
+      if (!leads) throw new Error("Provide one of leadId, email or phone.");
+      const lead = (leads as Record<string, unknown>[])[0];
+      if (!lead) throw new Error("No matching lead in LeadSquared.");
+      const numbers = [...new Set([lead.Phone, lead.Mobile, phone].filter((v): v is string => typeof v === "string" && v.trim() !== ""))];
+      if (numbers.length === 0) throw new Error("Lead has no Phone or Mobile to look up transcripts with.");
+      const transcripts = await clients.salesa.searchByNumbers(numbers, callStatus ?? "answered");
+      return {
+        lead: {
+          ProspectID: lead.ProspectID,
+          FirstName: lead.FirstName,
+          LastName: lead.LastName,
+          EmailAddress: lead.EmailAddress,
+          Phone: lead.Phone,
+          Mobile: lead.Mobile,
+          ProspectStage: lead.ProspectStage,
+          OwnerIdName: lead.OwnerIdName,
+        },
+        numbersQueried: numbers,
+        transcripts,
+      };
+    }),
+  );
 
   return server;
 }

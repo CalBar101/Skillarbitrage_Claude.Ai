@@ -10,6 +10,7 @@ const env = {
   LEADSQUARED_HOST: "api.leadsquared.com",
   LEADSQUARED_ACCESS_KEY: "ak",
   LEADSQUARED_SECRET_KEY: "sk",
+  SALESA_API_KEY: "salesa-key",
 };
 
 // Route fetch() from the MCP client into the worker; everything else is a stubbed LeadSquared.
@@ -21,6 +22,10 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   calls.push({ url, init });
   if (url.includes("Leads.GetByEmailaddress"))
     return new Response(JSON.stringify([{ ProspectID: "123", FirstName: "Asha" }]), { headers: { "content-type": "application/json" } });
+  if (url.includes("RetrieveLeadByPhoneNumber"))
+    return new Response(JSON.stringify([{ ProspectID: "77", FirstName: "Ravi", Phone: "+91-7805955245", Mobile: "9213579137" }]));
+  if (url.includes("search-by-numbers-v1"))
+    return new Response(JSON.stringify({ data: [{ phone: "917805955245", transcript: "hello" }] }));
   if (url.includes("Lead.Update")) return new Response(JSON.stringify({ Status: "Success", Message: { AffectedRows: 1 } }));
   return new Response("not found", { status: 404 });
 }) as typeof fetch;
@@ -47,6 +52,29 @@ test("lists tools and calls LeadSquared through the MCP transport", async () => 
   assert.equal(upd.isError, undefined);
   const body = JSON.parse(String(calls.find((c) => c.url.includes("Lead.Update"))!.init!.body));
   assert.deepEqual(body, [{ Attribute: "ProspectStage", Value: "Customer" }]);
+  await client.close();
+});
+
+test("salesa transcripts normalise phones and send the api key header", async () => {
+  const client = new Client({ name: "t", version: "0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL("http://worker.test/mcp/test-token")));
+  const r = await client.callTool({ name: "salesa_get_transcripts", arguments: { numbers: ["+91 78059 55245", "9213579137"] } });
+  assert.equal(r.isError, undefined);
+  const call = calls.find((c) => c.url.includes("search-by-numbers-v1"))!;
+  assert.match(call.url, /numbers=917805955245%2C919213579137&call_status=answered/);
+  assert.equal((call.init!.headers as Record<string, string>)["x-api-key"], "salesa-key");
+  await client.close();
+});
+
+test("lead_call_transcripts joins LeadSquared phone fields to Salesa", async () => {
+  const client = new Client({ name: "t", version: "0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL("http://worker.test/mcp/test-token")));
+  const r = await client.callTool({ name: "lead_call_transcripts", arguments: { phone: "7805955245" } });
+  assert.equal(r.isError, undefined, (r.content as { text: string }[])[0].text);
+  const out = JSON.parse((r.content as { text: string }[])[0].text);
+  assert.equal(out.lead.ProspectID, "77");
+  assert.deepEqual(out.numbersQueried, ["+91-7805955245", "9213579137", "7805955245"]);
+  assert.equal(out.transcripts.data[0].transcript, "hello");
   await client.close();
 });
 

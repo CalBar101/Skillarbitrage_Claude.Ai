@@ -5,5 +5,5 @@ LEADSQUARED_SECRET_KEY=
 LEADSQUARED_HOST=api.leadsquared.com
 ZIPTEAMS_BASE_URL=
 ZIPTEAMS_API_KEY=
-SALESA_BASE_URL=
+SALESA_BASE_URL=https://centralized-transcript-api.altlapps.com/api/v1
 SALESA_API_KEY=

@@ -9,6 +9,6 @@
   "vars": {
     "LEADSQUARED_HOST": "api-in21.leadsquared.com",
     "ZIPTEAMS_BASE_URL": "",
-    "SALESA_BASE_URL": ""
+    "SALESA_BASE_URL": "https://centralized-transcript-api.altlapps.com/api/v1"
   }
 }
