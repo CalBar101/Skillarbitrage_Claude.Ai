@@ -7,7 +7,7 @@
   "observability": { "enabled": true },
   // Non-secret config. Secrets (API keys) are set with `wrangler secret put`, never here.
   "vars": {
-    "LEADSQUARED_HOST": "api.leadsquared.com",
+    "LEADSQUARED_HOST": "api-in21.leadsquared.com",
     "ZIPTEAMS_BASE_URL": "",
     "SALESA_BASE_URL": ""
   }
