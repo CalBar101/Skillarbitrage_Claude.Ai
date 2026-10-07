@@ -95,7 +95,7 @@ const guard =
   };
 
 const attributeSchema = z
-  .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+  .record(z.string(), z.union([z.string(), z.coerce.number(), z.boolean(), z.null()]))
   .describe('Lead fields keyed by LeadSquared schema name, e.g. {"FirstName":"Asha","EmailAddress":"a@x.com","Phone":"+91..."}');
 
 function toAttributes(fields: Record<string, string | number | boolean | null>): LsqAttribute[] {
@@ -179,8 +179,8 @@ export function createServer(clients: Clients): McpServer {
         columns: z.array(z.string()).optional().describe("Schema names to return; default all"),
         sortBy: z.string().optional().describe("Schema name to sort on, e.g. ModifiedOn"),
         sortDesc: z.boolean().optional(),
-        page: z.number().int().min(1).optional(),
-        pageSize: z.number().int().min(1).max(100).optional(),
+        page: z.coerce.number().int().min(1).optional(),
+        pageSize: z.coerce.number().int().min(1).max(100).optional(),
       },
       annotations: READ,
     },
@@ -259,9 +259,9 @@ export function createServer(clients: Clients): McpServer {
       description: "Activity timeline for a lead (calls, emails, notes, custom activities). 25 per page.",
       inputSchema: {
         leadId: z.string(),
-        activityEvent: z.number().int().optional().describe("Filter to one ActivityEvent code"),
-        page: z.number().int().min(0).optional(),
-        pageSize: z.number().int().min(1).max(100).optional(),
+        activityEvent: z.coerce.number().int().optional().describe("Filter to one ActivityEvent code"),
+        page: z.coerce.number().int().min(0).optional(),
+        pageSize: z.coerce.number().int().min(1).max(100).optional(),
       },
       annotations: READ,
     },
@@ -276,7 +276,7 @@ export function createServer(clients: Clients): McpServer {
         "Post an activity (call note, meeting summary, custom activity) on a lead. Get the ActivityEvent code from leadsquared_activity_types. Confirm with the user first.",
       inputSchema: {
         leadId: z.string(),
-        activityEvent: z.number().int(),
+        activityEvent: z.coerce.number().int(),
         note: z.string().optional(),
         dateTime: z.string().optional().describe("yyyy-MM-dd HH:mm:ss in the account timezone; default now"),
         fields: z.array(z.object({ SchemaName: z.string(), Value: z.string() })).optional(),
@@ -296,8 +296,8 @@ export function createServer(clients: Clients): McpServer {
         value: z.string().optional(),
         fromDate: z.string().optional().describe("yyyy-MM-dd HH:mm:ss"),
         toDate: z.string().optional(),
-        page: z.number().int().min(1).optional(),
-        pageSize: z.number().int().min(1).max(100).optional(),
+        page: z.coerce.number().int().min(1).optional(),
+        pageSize: z.coerce.number().int().min(1).max(100).optional(),
       },
       annotations: READ,
     },
@@ -480,7 +480,7 @@ export function createServer(clients: Clients): McpServer {
     {
       title: "Recent Zipteams insights",
       description: "Call and customer summaries received from Zipteams in the last N hours, newest first.",
-      inputSchema: { hours: z.number().min(1).max(720).optional().describe("Default 24"), limit: z.number().int().min(1).max(200).optional() },
+      inputSchema: { hours: z.coerce.number().min(1).max(720).optional().describe("Default 24"), limit: z.coerce.number().int().min(1).max(200).optional() },
       annotations: READ,
     },
     guard(async ({ hours, limit }) => {
@@ -504,8 +504,8 @@ export function createServer(clients: Clients): McpServer {
       inputSchema: {
         numbers: phoneList,
         callStatus: z.string().optional().describe("Filter, e.g. 'answered'. Omit for all statuses."),
-        maxCalls: z.number().int().min(1).max(50).optional().describe("Newest calls to return. Default 10"),
-        maxChars: z.number().int().min(200).max(20000).optional().describe("Transcript characters per call. Default 4000"),
+        maxCalls: z.coerce.number().int().min(1).max(50).optional().describe("Newest calls to return. Default 10"),
+        maxChars: z.coerce.number().int().min(200).max(20000).optional().describe("Transcript characters per call. Default 4000"),
       },
       annotations: READ,
     },
@@ -534,8 +534,8 @@ export function createServer(clients: Clients): McpServer {
         email: z.string().optional(),
         phone: z.string().optional(),
         callStatus: z.string().optional(),
-        maxCalls: z.number().int().min(1).max(50).optional().describe("Newest calls to return. Default 10"),
-        maxChars: z.number().int().min(200).max(20000).optional().describe("Transcript characters per call. Default 4000"),
+        maxCalls: z.coerce.number().int().min(1).max(50).optional().describe("Newest calls to return. Default 10"),
+        maxChars: z.coerce.number().int().min(200).max(20000).optional().describe("Transcript characters per call. Default 4000"),
       },
       annotations: READ,
     },
@@ -573,14 +573,14 @@ export function createServer(clients: Clients): McpServer {
       description:
         "Leads modified in the last N days, filtered to a team (owner emails/ids or a lead field value), scored on stage, LeadSquared lead score, activity recency and count, Salesa answered calls, and Zipteams intent where stored. Returns the ranked list with each signal so the result can be explained. Use leadsquared_users to find owner emails and leadsquared_lead_fields to find a team field.",
       inputSchema: {
-        days: z.number().int().min(1).max(90).optional().describe("Default 7"),
+        days: z.coerce.number().int().min(1).max(90).optional().describe("Default 7"),
         ownerEmails: z.array(z.string()).optional(),
         ownerIds: z.array(z.string()).optional(),
         teamField: z.object({ field: z.string(), value: z.string() }).optional(),
-        stageWeights: z.record(z.string(), z.number()).optional(),
+        stageWeights: z.record(z.string(), z.coerce.number()).optional(),
         excludeStages: z.array(z.string()).optional(),
-        candidates: z.number().int().min(1).max(100).optional().describe("Leads to enrich with call and intent signals. Default 30"),
-        scanLimit: z.number().int().min(100).max(2000).optional().describe("Max leads scanned. Default 500"),
+        candidates: z.coerce.number().int().min(1).max(100).optional().describe("Leads to enrich with call and intent signals. Default 30"),
+        scanLimit: z.coerce.number().int().min(100).max(2000).optional().describe("Max leads scanned. Default 500"),
       },
       annotations: READ,
     },
@@ -608,7 +608,7 @@ export function createServer(clients: Clients): McpServer {
         "One call for the morning check: LeadSquared tasks due today and overdue, leads modified in the last 24h, and Zipteams call/customer insights received in the last 24h. Salesa transcripts are per-lead; use lead_call_transcripts for a specific lead. Each section reports its own error instead of failing the whole rundown.",
       inputSchema: {
         ownerUserId: z.string().optional().describe("Restrict tasks to this LeadSquared user id"),
-        hours: z.number().min(1).max(168).optional().describe("Look-back window for leads and insights. Default 24"),
+        hours: z.coerce.number().min(1).max(168).optional().describe("Look-back window for leads and insights. Default 24"),
       },
       annotations: READ,
     },

@@ -17,10 +17,34 @@ export interface LeadSquaredConfig {
 export type LsqAttribute = { Attribute: string; Value: string | number | boolean | null };
 export type LsqLead = Record<string, unknown>;
 
+/** LeadSquared allows 30 calls per 5 s per account. Space calls ~220 ms apart and retry once on 429. */
+class Throttle {
+  private next = 0;
+  constructor(private readonly gapMs: number) {}
+  async wait(): Promise<void> {
+    const now = Date.now();
+    const at = Math.max(now, this.next);
+    this.next = at + this.gapMs;
+    if (at > now) await new Promise((r) => setTimeout(r, at - now));
+  }
+}
+
 export class LeadSquaredClient {
   private readonly fetchImpl: FetchLike;
+  private readonly throttle = new Throttle(220);
   constructor(private readonly cfg: LeadSquaredConfig) {
-    this.fetchImpl = cfg.fetch ?? ((u, i) => fetch(u, i));
+    const base = cfg.fetch ?? ((u: string, i?: RequestInit) => fetch(u, i));
+    this.fetchImpl = async (u, i) => {
+      await this.throttle.wait();
+      let res = await base(u, i);
+      // The 30-per-5s quota is shared with every other integration on the account, so back off generously.
+      for (let attempt = 0; res.status === 429 && attempt < 3; attempt++) {
+        await new Promise((r) => setTimeout(r, 5500 + attempt * 2000));
+        await this.throttle.wait();
+        res = await base(u, i);
+      }
+      return res;
+    };
   }
 
   private url(path: string, params: Record<string, string | number | undefined> = {}): string {
