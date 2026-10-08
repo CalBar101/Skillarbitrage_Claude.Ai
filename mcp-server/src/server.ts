@@ -7,6 +7,7 @@ import { KVInsightsStore, MemoryKV, type InsightsStore, type KVLike } from "./st
 import { runSelfTest } from "./selftest.js";
 import { rankLeads } from "./ranking.js";
 import { teamDailySummary } from "./summary.js";
+import { analyzeCallingDay, analyzeCallingDayAll, activitiesOnDay } from "./dayanalysis.js";
 import { ApiError, redactUrl } from "./http.js";
 import type { FetchLike } from "./http.js";
 
@@ -180,6 +181,8 @@ export function createServer(clients: Clients): McpServer {
         columns: z.array(z.string()).optional().describe("Schema names to return; default all"),
         sortBy: z.string().optional().describe("Schema name to sort on, e.g. ModifiedOn"),
         sortDesc: z.boolean().optional(),
+        fromDate: z.string().optional().describe("ModifiedOn lower bound, UTC 'yyyy-MM-dd HH:mm:ss'"),
+        toDate: z.string().optional().describe("ModifiedOn upper bound, UTC 'yyyy-MM-dd HH:mm:ss'"),
         page: z.coerce.number().int().min(1).optional(),
         pageSize: z.coerce.number().int().min(1).max(100).optional(),
       },
@@ -187,7 +190,10 @@ export function createServer(clients: Clients): McpServer {
     },
     guard(async (a) =>
       lsq().searchLeads({
-        Parameter: a.field ? { LookupName: a.field, LookupValue: a.value, SqlOperator: a.operator ?? "=" } : undefined,
+        Parameter:
+          a.field || a.fromDate || a.toDate
+            ? { LookupName: a.field, LookupValue: a.value, SqlOperator: a.field ? (a.operator ?? "=") : undefined, FromDate: a.fromDate, ToDate: a.toDate }
+            : undefined,
         Columns: a.columns ? { Include_CSV: a.columns.join(",") } : undefined,
         Sorting: a.sortBy ? { ColumnName: a.sortBy, Direction: a.sortDesc ? "1" : "0" } : undefined,
         Paging: { PageIndex: a.page ?? 1, PageSize: a.pageSize ?? 25 },
@@ -627,6 +633,98 @@ export function createServer(clients: Clients): McpServer {
         tzOffsetMinutes: clients.tzOffsetMinutes,
       }),
     ),
+  );
+
+  server.registerTool(
+    "analyze_calling_day",
+    {
+      title: "Calling-day analysis for a batch of reps",
+      description:
+        "For one IST calendar day and up to 40 owner ids: per-rep outcome counts from LeadSquared (touched, new, connected, not connected, pipeline, closure, enrolled-stage, dead, Zipteams HIGH/MODERATE/LOW, mean intent and quality scores, objections) plus the strongest candidate leads per rep with phone numbers for transcript review. Call it once per batch of reps; use leadsquared_users to get ids and groups.",
+      inputSchema: {
+        day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("IST calendar day, YYYY-MM-DD"),
+        ownerIds: z.array(z.string()).min(1).max(40),
+        candidatesPerOwner: z.coerce.number().int().min(1).max(10).optional().describe("Default 3"),
+        scanLimit: z.coerce.number().int().min(100).max(10000).optional().describe("Default 6000"),
+      },
+      annotations: READ,
+    },
+    guard(async (a) => analyzeCallingDay(clients, { day: a.day, ownerIds: a.ownerIds, candidatesPerOwner: a.candidatesPerOwner ?? 3, scanLimit: a.scanLimit ?? 6000 })),
+  );
+
+  server.registerTool(
+    "analyze_calling_day_all",
+    {
+      title: "Whole-account calling day (Leads.RecentlyModified)",
+      description:
+        "Every lead modified on one IST day via LeadSquared's date-range endpoint, aggregated per owner (same counters as analyze_calling_day) with top candidate leads per owner. Pages of up to 1000; stops at the time budget and returns nextPage so you can continue.",
+      inputSchema: {
+        day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        startPage: z.coerce.number().int().min(1).optional().describe("Default 1"),
+        maxPages: z.coerce.number().int().min(1).max(50).optional().describe("Default 20"),
+        pageSize: z.coerce.number().int().min(100).max(5000).optional().describe("Default 1000"),
+        candidatesPerOwner: z.coerce.number().int().min(1).max(10).optional().describe("Default 3"),
+        budgetMs: z.coerce.number().int().min(5000).max(55000).optional().describe("Default 40000"),
+        ownerIds: z.array(z.string()).optional().describe("Restrict to these owners"),
+      },
+      annotations: READ,
+    },
+    guard(async (a) =>
+      analyzeCallingDayAll(clients, {
+        day: a.day,
+        startPage: a.startPage ?? 1,
+        maxPages: a.maxPages ?? 20,
+        pageSize: a.pageSize ?? 1000,
+        candidatesPerOwner: a.candidatesPerOwner ?? 3,
+        budgetMs: a.budgetMs ?? 40000,
+        ownerFilter: a.ownerIds?.length ? new Set(a.ownerIds) : undefined,
+      }),
+    ),
+  );
+
+  server.registerTool(
+    "leadsquared_activities_on_day",
+    {
+      title: "LeadSquared activities on one day",
+      description: "Activities created in one IST day via ProspectActivity.svc/RetrieveRecentlyModified, aggregated by creator and activity type (call activities included), with a raw sample. Optional activityEvent filter.",
+      inputSchema: {
+        day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        activityEvent: z.coerce.number().int().optional(),
+        startPage: z.coerce.number().int().min(1).optional(),
+        maxPages: z.coerce.number().int().min(1).max(50).optional().describe("Default 10"),
+        pageSize: z.coerce.number().int().min(50).max(5000).optional().describe("Default 1000"),
+        budgetMs: z.coerce.number().int().min(5000).max(55000).optional().describe("Default 40000"),
+        sample: z.coerce.number().int().min(0).max(20).optional().describe("Raw records to return. Default 3"),
+      },
+      annotations: READ,
+    },
+    guard(async (a) =>
+      activitiesOnDay(clients, { day: a.day, activityEvent: a.activityEvent, startPage: a.startPage ?? 1, maxPages: a.maxPages ?? 10, pageSize: a.pageSize ?? 1000, budgetMs: a.budgetMs ?? 40000, sample: a.sample ?? 3 }),
+    ),
+  );
+
+  server.registerTool(
+    "salesa_calls_on_day",
+    {
+      title: "Salesa calls on one day",
+      description: "Transcripts for the given phone numbers restricted to one IST calendar day, with agent name and duration. Batches the Salesa lookups internally.",
+      inputSchema: {
+        numbers: z.array(z.string()).min(1).max(60),
+        day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        minSeconds: z.coerce.number().int().min(0).optional().describe("Drop calls shorter than this. Default 20"),
+        maxChars: z.coerce.number().int().min(200).max(20000).optional().describe("Transcript characters per call. Default 6000"),
+      },
+      annotations: READ,
+    },
+    guard(async ({ numbers, day, minSeconds, maxChars }) => {
+      const out: { phones: Record<string, number>; calls: unknown[] } = { phones: {}, calls: [] };
+      for (let i = 0; i < numbers.length; i += 5) {
+        const r = await clients.salesa.callsOnDay(numbers.slice(i, i + 5), day, { minSeconds: minSeconds ?? 20, maxChars });
+        Object.assign(out.phones, r.phones);
+        out.calls.push(...r.calls);
+      }
+      return out;
+    }),
   );
 
   // ---------------- Rundown ----------------

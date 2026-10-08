@@ -82,7 +82,7 @@ export class LeadSquaredClient {
   }
   /** Advanced search. `criteria` uses LeadSquared's SearchParameters syntax, e.g. { LookupName: "ProspectStage", LookupValue: "Prospect" } or a raw `Parameter`. */
   searchLeads(body: {
-    Parameter?: { LookupName?: string; LookupValue?: string; SqlOperator?: string };
+    Parameter?: { LookupName?: string; LookupValue?: string; SqlOperator?: string; FromDate?: string; ToDate?: string };
     Columns?: { Include_CSV?: string };
     Sorting?: { ColumnName: string; Direction: "0" | "1" };
     Paging?: { PageIndex: number; PageSize: number };
@@ -106,6 +106,20 @@ export class LeadSquaredClient {
       attributes,
       { postUpdatedLead: "true", searchBy },
     );
+  }
+  /** Leads modified in a UTC window ("yyyy-MM-dd HH:mm:ss"), up to 5000 per page. */
+  leadsRecentlyModified(body: { FromDate: string; ToDate: string; Columns?: { Include_CSV?: string }; Paging?: { PageIndex: number; PageSize: number } }) {
+    return this.post<{ RecordCount?: number; Leads?: { LeadPropertyList: { Attribute: string; Value: unknown }[] }[] } | LsqLead[]>(
+      "LeadManagement.svc/Leads.RecentlyModified",
+      { Parameter: { FromDate: body.FromDate, ToDate: body.ToDate }, Columns: body.Columns, Paging: body.Paging },
+    );
+  }
+  /** Activities created/modified in a UTC window. */
+  activitiesRecentlyModified(body: { FromDate: string; ToDate: string; ActivityEvent?: number; Paging?: { PageIndex: number; PageSize: number } }) {
+    return this.post<unknown>("ProspectActivity.svc/RetrieveRecentlyModified", {
+      Parameter: { FromDate: body.FromDate, ToDate: body.ToDate, ActivityEvent: body.ActivityEvent },
+      Paging: body.Paging,
+    });
   }
   getLeadFields() {
     return this.get<unknown[]>("LeadManagement.svc/LeadsMetaData.Get");

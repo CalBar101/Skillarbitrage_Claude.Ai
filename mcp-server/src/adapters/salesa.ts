@@ -40,6 +40,14 @@ export class SalesaClient {
     return compactSalesa(raw, opts);
   }
 
+  /** Calls on one calendar day (Salesa start_time is IST labelled as Z), all statuses, newest first. */
+  async callsOnDay(numbers: string[], day: string, opts: { maxChars?: number; minSeconds?: number } = {}) {
+    const raw = await this.searchByNumbersRaw(numbers);
+    const all = compactSalesa(raw, { maxCalls: 10_000, maxChars: opts.maxChars ?? 6000 });
+    const calls = all.calls.filter((c) => (c.startTime ?? "").startsWith(day) && (c.durationSec ?? 0) >= (opts.minSeconds ?? 0));
+    return { phones: all.phones, calls };
+  }
+
   /** API 2: ask Salesa to transcribe pending calls for these phones. */
   generateTranscripts(phones: string[]) {
     return this.rest.request<unknown>("POST", "/webhook/generate-transcripts-by-phone", {

@@ -214,7 +214,7 @@ export async function rankLeads(clients: Clients, o: RankOptions) {
 }
 
 export const TEAM_LEAD_COLUMNS =
-  "ProspectID,FirstName,LastName,EmailAddress,Phone,Mobile,ProspectStage,Score,OwnerId,OwnerIdName,OwnerIdEmailAddress,ModifiedOn,CreatedOn,Source,LastActivity,LastActivityDate,mx_Zip_Intent,mx_Zip_Intent_Type,mx_Zip_Intent_Score,mx_Zip_AI_Disposition,mx_Zip_Objection_Category,mx_Lead_category,mx_Call_Connected_Status,mx_Enquired_Course";
+  "ProspectID,FirstName,LastName,EmailAddress,Phone,Mobile,ProspectStage,Score,OwnerId,OwnerIdName,OwnerIdEmailAddress,ModifiedOn,CreatedOn,Source,LastActivity,LastActivityDate,mx_Zip_Intent,mx_Zip_Intent_Type,mx_Zip_Intent_Score,mx_Zip_AI_Disposition,mx_Zip_Objection_Category,mx_Zip_Quality_Score,mx_Zip_Intent_Justification,mx_Zip_Talking_Points,mx_Lead_category,mx_Call_Connected_Status,mx_Enquired_Course";
 
 /**
  * Leads modified at/after `cutoffLocal` for a set of owners (one LeadSquared query per owner,
